@@ -1,0 +1,13 @@
+#!/bin/bash
+# CDE 스튜디오 앱 런처
+# 프로젝트 루트 = 앱 번들의 상위 디렉토리
+APP_BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
+PROJECT_DIR="$(dirname "$APP_BUNDLE")"
+
+osascript <<EOF
+tell application "Terminal"
+    activate
+    set w to do script "cd '$PROJECT_DIR' && python3 run.py"
+    set custom title of w to "CDE 스튜디오 서버"
+end tell
+EOF
