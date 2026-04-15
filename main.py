@@ -26,7 +26,7 @@ async def _broadcast(event: str, data: dict) -> None:
             q.put_nowait((event, payload))
         except Exception:
             dead.add(q)
-    _sse_clients -= dead
+    _sse_clients.difference_update(dead)
 
 BASE_URL = "https://cde.jj.ac.kr/_custom/jj/_common/app/room-reservation/logic/ajax.jsp"
 WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]

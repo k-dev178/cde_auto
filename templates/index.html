@@ -97,8 +97,31 @@
     const alertedSeqs = new Set();
     const timerMap    = {};
 
+    /* 알림음 — Web Audio API (파일 불필요, 맥/윈도 공통) */
+    let _actx = null;
+    function playAlertBeep() {
+      try {
+        if (!_actx) _actx = new (window.AudioContext || window.webkitAudioContext)();
+        if (_actx.state === 'suspended') _actx.resume();
+        const osc = _actx.createOscillator(), gain = _actx.createGain();
+        osc.connect(gain); gain.connect(_actx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, _actx.currentTime);
+        osc.frequency.setValueAtTime(660, _actx.currentTime + 0.15);
+        gain.gain.setValueAtTime(0.4, _actx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, _actx.currentTime + 0.5);
+        osc.start(_actx.currentTime);
+        osc.stop(_actx.currentTime + 0.5);
+      } catch(e) {}
+    }
+    /* 브라우저 autoplay 정책: 클릭 이후 오디오 컨텍스트 활성화 */
+    document.addEventListener('click', () => { if (_actx && _actx.state === 'suspended') _actx.resume(); });
+
     function showToast(title, body, color = 'bg-amber-500 border-amber-400') {
-      if (Notification.permission === 'granted') new Notification(title, { body });
+      try {
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted')
+          new Notification(title, { body });
+      } catch(e) {}
       const div = document.createElement('div');
       div.className = `pointer-events-auto ${color} text-white px-4 py-3 rounded-lg shadow-xl text-sm border`;
       div.innerHTML = `<p class="font-bold mb-0.5">${title}</p><p class="opacity-90 whitespace-pre-line text-xs">${body}</p>`;
@@ -128,7 +151,13 @@
         const deadline = new Date(now);
         deadline.setHours(h, m + 20, 0, 0);
         const delay = deadline - now;
-        if (delay <= 0) return;
+
+        if (delay <= 0) {
+          alertedSeqs.add(seq);
+          showToast('⚠️ 미입실 알림',
+            `${item.rpName}\n${item.rrBooker}님이 ${item.rrStartTime} 예약 후 입실하지 않았습니다.`);
+          return;
+        }
 
         timerMap[seq] = setTimeout(() => {
           delete timerMap[seq]; alertedSeqs.add(seq);
