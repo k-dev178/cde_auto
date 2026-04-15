@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 import requests as http_client
-from datetime import date, datetime
+from datetime import date, datetime, timezone, timedelta
 from urllib.parse import quote
 import asyncio
 import json as _json
@@ -10,6 +10,18 @@ import io
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+
+# 한국 시간대(KST) 설정
+KST = timezone(timedelta(hours=9))
+
+
+def get_now():
+    return datetime.now(KST)
+
+
+def get_today():
+    return get_now().date()
+
 
 checkin_set: set[str] = set()
 _sse_clients: set[asyncio.Queue] = set()
@@ -41,7 +53,7 @@ def _fetch(d: str) -> list | None:
 
 
 def _build_context() -> dict:
-    today = date.today()
+    today = get_today()
     d = today.strftime("%Y-%m-%d")
     items = _fetch(d)
     sorted_items = sorted(items or [], key=lambda x: x.get("rrStartTime", ""))
@@ -52,7 +64,7 @@ def _build_context() -> dict:
         "checkin_list": list(checkin_set),
         "checkin_set": checkin_set,
         "error": items is None,
-        "updated_at": datetime.now().strftime("%H:%M"),
+        "updated_at": get_now().strftime("%H:%M"),
         "total": len(sorted_items),
         "confirmed": sum(1 for i in sorted_items if i.get("rrState") == "예약완료"),
     }
@@ -151,7 +163,7 @@ async def export_excel(year: int | None = None, month: int | None = None):
 
     import calendar
 
-    today = date.today()
+    today = get_today()
     y = year or today.year
     m = month or today.month
     _, last_day = calendar.monthrange(y, m)
@@ -248,7 +260,7 @@ async def export_today_excel():
         from fastapi.responses import JSONResponse
         return JSONResponse({"error": "openpyxl not installed"}, status_code=500)
 
-    today = date.today()
+    today = get_today()
     d = today.strftime("%Y-%m-%d")
     items = _fetch(d) or []
     items = sorted(items, key=lambda x: x.get("rrStartTime", ""))
@@ -298,7 +310,7 @@ async def export_today_excel():
 
 @app.get("/export/today/txt")
 async def export_today_txt():
-    today = date.today()
+    today = get_today()
     d = today.strftime("%Y-%m-%d")
     items = _fetch(d) or []
     items = sorted(items, key=lambda x: x.get("rrStartTime", ""))
@@ -322,7 +334,7 @@ async def export_today_txt():
 async def export_txt(year: int | None = None, month: int | None = None):
     import calendar
 
-    today = date.today()
+    today = get_today()
     y = year or today.year
     m = month or today.month
     _, last_day = calendar.monthrange(y, m)
