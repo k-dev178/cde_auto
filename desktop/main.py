@@ -220,6 +220,8 @@ class MainWindow(QMainWindow):
         self.reservation_rows: dict[str, ReservationRow] = {}
         self.room_items: dict[int, RoomListItem] = {}
         self.self_studio_only = False
+        self.sidebar_open = False
+        self.edit_mode = False
 
         self.signals = ReservationSignals()
         self.signals.loaded.connect(self.on_reservations_loaded)
@@ -245,10 +247,23 @@ class MainWindow(QMainWindow):
         self.sidebar = QFrame()
         self.sidebar.setObjectName("sidebar")
         self.sidebar.setFixedWidth(282)
+        self.sidebar.setVisible(False)
         add_shadow(self.sidebar, blur=24, offset_y=8, alpha=12)
 
         self.sidebar_title = QLabel("룸 목록")
         self.sidebar_title.setObjectName("sidebarTitle")
+
+        self.edit_button = QPushButton("편집")
+        self.edit_button.setObjectName("editButton")
+        self.edit_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.edit_button.clicked.connect(self.toggle_edit_mode)
+
+        sidebar_header = QHBoxLayout()
+        sidebar_header.setContentsMargins(0, 0, 0, 0)
+        sidebar_header.setSpacing(8)
+        sidebar_header.addWidget(self.sidebar_title)
+        sidebar_header.addStretch(1)
+        sidebar_header.addWidget(self.edit_button)
 
         self.sidebar_summary = QLabel()
         self.sidebar_summary.setObjectName("sidebarSummary")
@@ -273,17 +288,6 @@ class MainWindow(QMainWindow):
         self.add_room_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.add_room_button.clicked.connect(self.prompt_add_room)
 
-        self.room_action_title = QLabel("선택 룸")
-        self.room_action_title.setObjectName("roomActionTitle")
-
-        self.room_action_name = QLabel("전체 예약")
-        self.room_action_name.setObjectName("roomActionName")
-
-        self.room_toggle_button = QPushButton("룸 선택")
-        self.room_toggle_button.setObjectName("roomToggleButton")
-        self.room_toggle_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.room_toggle_button.clicked.connect(self.toggle_selected_room)
-
         self.rename_button = QPushButton("이름 변경")
         self.rename_button.setObjectName("secondaryAction")
         self.rename_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -294,26 +298,24 @@ class MainWindow(QMainWindow):
         self.delete_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.delete_button.clicked.connect(self.confirm_delete_selected_room)
 
-        room_manage = QFrame()
-        room_manage.setObjectName("roomManage")
-        room_manage_layout = QVBoxLayout(room_manage)
-        room_manage_layout.setContentsMargins(12, 12, 12, 12)
-        room_manage_layout.setSpacing(9)
-        room_manage_layout.addWidget(self.room_action_title)
-        room_manage_layout.addWidget(self.room_action_name)
-        room_manage_layout.addWidget(self.room_toggle_button)
-        room_manage_layout.addWidget(self.rename_button)
-        room_manage_layout.addWidget(self.delete_button)
+        self.edit_controls = QFrame()
+        self.edit_controls.setObjectName("roomManage")
+        edit_controls_layout = QVBoxLayout(self.edit_controls)
+        edit_controls_layout.setContentsMargins(12, 12, 12, 12)
+        edit_controls_layout.setSpacing(8)
+        edit_controls_layout.addWidget(self.add_room_button)
+        edit_controls_layout.addWidget(self.rename_button)
+        edit_controls_layout.addWidget(self.delete_button)
+        self.edit_controls.setVisible(False)
 
         sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(16, 16, 16, 16)
         sidebar_layout.setSpacing(12)
-        sidebar_layout.addWidget(self.sidebar_title)
+        sidebar_layout.addLayout(sidebar_header)
         sidebar_layout.addWidget(self.sidebar_summary)
         sidebar_layout.addWidget(self.all_item)
         sidebar_layout.addWidget(room_scroll, 1)
-        sidebar_layout.addWidget(self.add_room_button)
-        sidebar_layout.addWidget(room_manage)
+        sidebar_layout.addWidget(self.edit_controls)
 
         self.app_label = QLabel("CDE Studio")
         self.app_label.setObjectName("appLabel")
@@ -324,9 +326,17 @@ class MainWindow(QMainWindow):
 
         self.theme_switch = ThemeSwitch(self.change_theme)
 
+        self.sidebar_button = QPushButton("☰")
+        self.sidebar_button.setObjectName("menuButton")
+        self.sidebar_button.setToolTip("룸 목록")
+        self.sidebar_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.sidebar_button.setFixedSize(38, 38)
+        self.sidebar_button.clicked.connect(self.toggle_sidebar)
+
         top_bar = QHBoxLayout()
         top_bar.setContentsMargins(0, 0, 0, 0)
         top_bar.setSpacing(8)
+        top_bar.addWidget(self.sidebar_button)
         top_bar.addWidget(self.app_label)
         top_bar.addStretch(1)
         top_bar.addWidget(self.theme_switch)
@@ -450,18 +460,20 @@ class MainWindow(QMainWindow):
     def render_room_manage(self) -> None:
         room = self.find_room_snapshot(self.selected_room_id)
         has_room = room is not None
-        if room is None:
-            self.room_action_name.setText("전체 예약")
-            self.room_toggle_button.setText("룸을 선택하세요")
-        else:
-            occupied = bool(room["occupied"])
-            self.room_action_name.setText(str(room["name"]))
-            self.room_toggle_button.setText("퇴실 처리" if occupied else "입실 처리")
-            self.room_toggle_button.setProperty("occupied", occupied)
 
-        for button in (self.room_toggle_button, self.rename_button, self.delete_button):
+        self.edit_controls.setVisible(self.edit_mode)
+        self.edit_button.setText("완료" if self.edit_mode else "편집")
+        self.edit_button.setProperty("selected", self.edit_mode)
+        self.add_room_button.setVisible(self.edit_mode)
+        self.rename_button.setVisible(self.edit_mode)
+        self.delete_button.setVisible(self.edit_mode)
+        self.add_room_button.setEnabled(self.edit_mode)
+
+        for button in (self.rename_button, self.delete_button):
             button.setEnabled(has_room)
             refresh_one(button)
+        refresh_one(self.add_room_button)
+        refresh_one(self.edit_button)
 
     def render_reservations(self) -> None:
         clear_layout(self.reservation_list)
@@ -567,11 +579,15 @@ class MainWindow(QMainWindow):
         self.selected_room_id = room_id
         self.refresh()
 
-    def toggle_selected_room(self) -> None:
-        if self.selected_room_id is None:
-            return
-        self.state.toggle_room(self.selected_room_id)
-        self.refresh()
+    def toggle_sidebar(self) -> None:
+        self.sidebar_open = not self.sidebar_open
+        self.sidebar.setVisible(self.sidebar_open)
+        self.sidebar_button.setProperty("selected", self.sidebar_open)
+        refresh_one(self.sidebar_button)
+
+    def toggle_edit_mode(self) -> None:
+        self.edit_mode = not self.edit_mode
+        self.render_room_manage()
 
     def toggle_reservation_checkin(self, key: str) -> None:
         if key in self.reservation_checkins:
@@ -749,7 +765,6 @@ QFrame#statusDot[occupied="true"] {
 }
 QLabel#filterTitle,
 QLabel#listRoomName,
-QLabel#roomActionName,
 QLabel#reservationStudio {
     color: #1d1d1f;
     font-weight: 800;
@@ -759,8 +774,7 @@ QLabel#listRoomName {
     font-size: 14px;
 }
 QLabel#filterDetail,
-QLabel#listRoomStatus,
-QLabel#roomActionTitle {
+QLabel#listRoomStatus {
     color: #6e6e73;
     font-size: 12px;
     font-weight: 700;
@@ -774,8 +788,7 @@ QFrame#roomManage {
     border-radius: 8px;
 }
 QPushButton#addRoomButton,
-QPushButton#refreshButton,
-QPushButton#roomToggleButton {
+QPushButton#refreshButton {
     background: #0071e3;
     border: 0;
     border-radius: 8px;
@@ -787,17 +800,35 @@ QPushButton#refreshButton {
     font-size: 13px;
     padding: 9px 12px;
 }
-QPushButton#roomToggleButton {
-    font-size: 13px;
-    padding: 11px 12px;
-}
 QPushButton#addRoomButton:hover,
-QPushButton#refreshButton:hover,
-QPushButton#roomToggleButton:hover {
+QPushButton#refreshButton:hover {
     background: #0077ed;
 }
-QPushButton#roomToggleButton[occupied="true"] {
-    background: #1d1d1f;
+QPushButton#menuButton {
+    background: rgba(255, 255, 255, 0.82);
+    border: 1px solid #e5e5ea;
+    border-radius: 8px;
+    color: #1d1d1f;
+    font-size: 19px;
+    font-weight: 800;
+}
+QPushButton#menuButton:hover,
+QPushButton#menuButton[selected="true"] {
+    background: #ffffff;
+    border: 1px solid #c7c7cc;
+}
+QPushButton#editButton {
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    color: #0071e3;
+    font-size: 13px;
+    font-weight: 800;
+    padding: 7px 9px;
+}
+QPushButton#editButton:hover,
+QPushButton#editButton[selected="true"] {
+    background: #eaf4ff;
 }
 QPushButton#secondaryAction,
 QPushButton#dangerAction {
@@ -943,7 +974,6 @@ QWidget#appRoot[theme="dark"] QLabel#sidebarTitle,
 QWidget#appRoot[theme="dark"] QLabel#reservationTitle,
 QWidget#appRoot[theme="dark"] QLabel#filterTitle,
 QWidget#appRoot[theme="dark"] QLabel#listRoomName,
-QWidget#appRoot[theme="dark"] QLabel#roomActionName,
 QWidget#appRoot[theme="dark"] QLabel#reservationStudio {
     color: #f5f5f7;
 }
@@ -952,7 +982,6 @@ QWidget#appRoot[theme="dark"] QLabel#today,
 QWidget#appRoot[theme="dark"] QLabel#sidebarSummary,
 QWidget#appRoot[theme="dark"] QLabel#filterDetail,
 QWidget#appRoot[theme="dark"] QLabel#listRoomStatus,
-QWidget#appRoot[theme="dark"] QLabel#roomActionTitle,
 QWidget#appRoot[theme="dark"] QLabel#reservationMetaHeader,
 QWidget#appRoot[theme="dark"] QLabel#reservationMeta,
 QWidget#appRoot[theme="dark"] QLabel#reservationPurpose,
@@ -995,8 +1024,22 @@ QWidget#appRoot[theme="dark"] QPushButton#dangerAction {
     background: #402024;
     color: #ff6961;
 }
-QWidget#appRoot[theme="dark"] QPushButton#roomToggleButton[occupied="true"] {
+QWidget#appRoot[theme="dark"] QPushButton#menuButton {
+    background: rgba(44, 44, 46, 0.86);
+    border: 1px solid #3a3a3c;
+    color: #f5f5f7;
+}
+QWidget#appRoot[theme="dark"] QPushButton#menuButton:hover,
+QWidget#appRoot[theme="dark"] QPushButton#menuButton[selected="true"] {
     background: #3a3a3c;
+    border: 1px solid #636366;
+}
+QWidget#appRoot[theme="dark"] QPushButton#editButton {
+    color: #0a84ff;
+}
+QWidget#appRoot[theme="dark"] QPushButton#editButton:hover,
+QWidget#appRoot[theme="dark"] QPushButton#editButton[selected="true"] {
+    background: #102f4f;
 }
 QWidget#appRoot[theme="dark"] QScrollBar::handle:vertical {
     background: #48484a;
