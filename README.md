@@ -1,39 +1,51 @@
-# CDE 스튜디오 대여 현황
+# CDE Studio Status
 
-CDE 스튜디오 예약 현황을 보여주는 웹 앱입니다.
+Desktop GUI app for tracking studio room status on Windows.
 
-## 설치
+The app is local-first:
 
-```bash
+- No web UI.
+- No separate server process.
+- No LAN sync.
+- Today's reservation list is loaded from the Jeonju University CDE reservation endpoint.
+- Room status is stored on the local machine.
+
+## Quick Start
+
+Install Python 3.11 or newer first.
+
+On Windows, make sure `python --version` works in PowerShell. If it opens the Microsoft Store or says Python was not found, install Python from python.org and enable "Add python.exe to PATH" during setup.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-> 여러 Python 환경이 있는 경우, 실행할 Python의 pip로 설치해야 합니다.
-> ```bash
-> python -m pip install -r requirements.txt
-> ```
+Start the GUI app:
 
-## 실행
-
-```bash
-python -m uvicorn main:app --reload --port 8000
+```powershell
+.\start_app.bat
 ```
 
-> `uvicorn` 단독 명령 대신 `python -m uvicorn`을 쓰면 현재 Python 환경에 설치된 패키지를 정확히 사용합니다.
+This opens the PySide6 desktop GUI.
 
-브라우저에서 `http://localhost:8000` 접속
+Room names are in `config/client.json`:
 
-## 기능
+```json
+{
+  "theme": "light",
+  "rooms": [
+    "1호실",
+    "2호실",
+    "3호실",
+    "4호실"
+  ]
+}
+```
 
-| 기능 | 설명 |
-|---|---|
-| 예약 목록 | 오늘 날짜 예약 현황 자동 표시 |
-| 자동 갱신 | 30초마다 최신 데이터로 갱신 |
-| 입실 처리 | 입실 버튼 클릭으로 토글 |
-| 미입실 알림 | 예약 시작 20분 후 미입실 시 브라우저 알림 |
-| 엑셀 다운로드 | 월별 일별 예약 내역 `.xlsx` 다운로드 |
+## Notes
 
-## 엑셀 다운로드
-
-- 헤더의 월 선택 후 **엑셀 다운로드** 클릭
-- URL 직접 호출: `/export?year=2026&month=4`
+- Local status cache is stored in `data/room_state.json`.
+- Rooms can be added, renamed, and deleted inside the app.
+- `config/client.json` stores the room list and selected theme.

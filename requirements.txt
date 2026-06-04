@@ -1,5 +1,1 @@
-fastapi
-uvicorn[standard]
-jinja2
-requests
-openpyxl
+PySide6>=6.10.2,<7
