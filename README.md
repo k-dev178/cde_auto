@@ -1,20 +1,8 @@
-# CDE Studio Status
+# CDE Studio
 
-Desktop GUI app for tracking studio room status on Windows.
+전주대 CDE 스튜디오 예약 확인용 Windows 데스크톱 앱입니다.
 
-The app is local-first:
-
-- No web UI.
-- No separate server process.
-- No LAN sync.
-- Today's reservation list is loaded from the Jeonju University CDE reservation endpoint.
-- Room status is stored on the local machine.
-
-## Quick Start
-
-Install Python 3.11 or newer first.
-
-On Windows, make sure `python --version` works in PowerShell. If it opens the Microsoft Store or says Python was not found, install Python from python.org and enable "Add python.exe to PATH" during setup.
+## 개발 실행
 
 ```powershell
 python -m venv .venv
@@ -22,30 +10,42 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Start the GUI app:
-
 ```powershell
 .\start_app.bat
 ```
 
-This opens the PySide6 desktop GUI.
+## exe 실행
 
-Room names are in `config/client.json`:
+빌드된 단일 실행 파일은 아래 경로에 생성됩니다.
 
-```json
-{
-  "theme": "light",
-  "rooms": [
-    "1호실",
-    "2호실",
-    "3호실",
-    "4호실"
-  ]
-}
+```text
+dist\CDEStudio.exe
 ```
 
-## Notes
+`CDEStudio.exe` 파일만 복사해서 실행해도 됩니다.
 
-- Local status cache is stored in `data/room_state.json`.
-- Rooms can be added, renamed, and deleted inside the app.
-- `config/client.json` stores the room list and selected theme.
+## 저장되는 설정
+
+- 다크/화이트 모드
+- 셀프(1인)스튜디오 필터
+- 왼쪽 룸 목록 열림 상태
+- 백그라운드 실행 허용
+- 알림 범위
+- 입실 버튼 체크 상태
+
+## 설정 초기화
+
+exe로 실행한 앱의 설정과 상태는 아래 폴더에 저장됩니다.
+
+```text
+%LOCALAPPDATA%\CDEStudio
+```
+
+설정을 전부 초기화하려면 앱을 종료한 뒤 이 폴더를 삭제하면 됩니다.
+
+개발 모드에서 `start_app.bat`로 실행한 경우에는 repo 안의 아래 파일/폴더를 삭제하면 됩니다.
+
+```text
+config\client.json
+data\room_state.json
+```

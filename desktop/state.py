@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+def app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "CDEStudio"
+        return Path.home() / "AppData" / "Local" / "CDEStudio"
+    return Path(__file__).resolve().parents[1]
+
+
+ROOT_DIR = app_root()
 STATE_DIR = ROOT_DIR / "data"
 STATE_PATH = STATE_DIR / "room_state.json"
 CONFIG_PATH = ROOT_DIR / "config" / "client.json"
+DEFAULT_ROOMS = ["1호실", "2호실", "3호실", "4호실"]
 
 
 def utc_now() -> str:
@@ -27,12 +39,16 @@ class AppConfig:
 
 
 def load_config() -> AppConfig:
-    data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    data = {}
+    if CONFIG_PATH.exists():
+        loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = loaded
     theme = str(data.get("theme", "light"))
     if theme not in {"light", "dark"}:
         theme = "light"
     return AppConfig(
-        rooms=[str(room) for room in data.get("rooms", ["1호실", "2호실", "3호실", "4호실"])],
+        rooms=[str(room) for room in data.get("rooms", DEFAULT_ROOMS)],
         theme=theme,
         self_studio_only=bool(data.get("self_studio_only", False)),
         sidebar_open=bool(data.get("sidebar_open", False)),
@@ -68,8 +84,13 @@ def save_ui_settings(
 
 
 def save_config_values(**values: object) -> None:
-    data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    data = {}
+    if CONFIG_PATH.exists():
+        loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = loaded
     data.update(values)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -77,8 +98,13 @@ def save_config_values(**values: object) -> None:
 
 
 def save_config_rooms(rooms: list[str]) -> None:
-    data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    data = {}
+    if CONFIG_PATH.exists():
+        loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = loaded
     data["rooms"] = rooms
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
