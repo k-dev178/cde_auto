@@ -5,5 +5,7 @@
     "2호실",
     "3호실",
     "4호실"
-  ]
+  ],
+  "self_studio_only": true,
+  "sidebar_open": true
 }

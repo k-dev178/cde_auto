@@ -3,35 +3,41 @@ from __future__ import annotations
 import json
 import sys
 import threading
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-from PySide6.QtCore import QObject, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QCursor, QFont
+from PySide6.QtCore import QObject, QRectF, QTimer, Qt, Signal
+from PySide6.QtGui import QAction, QBrush, QColor, QCursor, QFont, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 
-from desktop.state import RoomState, load_config, save_theme
+from desktop.state import RoomState, load_config, save_theme, save_ui_settings
 
 
 BASE_URL = "https://cde.jj.ac.kr/_custom/jj/_common/app/room-reservation/logic/ajax.jsp"
 WEEKDAYS = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+PREP_ALERT_MINUTES = 30
+CHECKIN_GRACE_MINUTES = 20
+ALERT_REPEAT_MINUTES = 5
 
 
 class ReservationSignals(QObject):
@@ -205,6 +211,44 @@ class ReservationRow(QFrame):
         refresh_one(self.checkin_button)
 
 
+class SettingsDialog(QDialog):
+    def __init__(self, parent: "MainWindow") -> None:
+        super().__init__(parent)
+        self.main_window = parent
+        self.setWindowTitle("설정")
+        self.setModal(True)
+        self.setMinimumWidth(360)
+        self.setProperty("theme", parent.theme)
+
+        title = QLabel("설정")
+        title.setObjectName("settingsTitle")
+
+        self.background_check = QCheckBox("백그라운드 실행 허용")
+        self.background_check.setObjectName("settingsCheck")
+        self.background_check.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.background_check.setChecked(parent.background_enabled)
+        self.background_check.toggled.connect(parent.set_background_enabled)
+
+        self.notification_scope_check = QCheckBox("셀프(1인)스튜디오만 알림")
+        self.notification_scope_check.setObjectName("settingsCheck")
+        self.notification_scope_check.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.notification_scope_check.setChecked(parent.notification_self_studio_only)
+        self.notification_scope_check.toggled.connect(parent.set_notification_self_studio_only)
+
+        close_button = QPushButton("닫기")
+        close_button.setObjectName("refreshButton")
+        close_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        close_button.clicked.connect(self.accept)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 20)
+        layout.setSpacing(16)
+        layout.addWidget(title)
+        layout.addWidget(self.background_check)
+        layout.addWidget(self.notification_scope_check)
+        layout.addWidget(close_button)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, state: RoomState) -> None:
         super().__init__()
@@ -216,12 +260,18 @@ class MainWindow(QMainWindow):
         self.reservation_error = False
         self.reservation_date = date.today().strftime("%Y-%m-%d")
         self.reservation_updated_at = ""
-        self.reservation_checkins: set[str] = set()
+        self.reservation_checkins = self.state.checked_in_reservations(self.reservation_date)
         self.reservation_rows: dict[str, ReservationRow] = {}
         self.room_items: dict[int, RoomListItem] = {}
-        self.self_studio_only = False
-        self.sidebar_open = False
+        self.self_studio_only = self.state.config.self_studio_only
+        self.sidebar_open = self.state.config.sidebar_open
+        self.background_enabled = self.state.config.background_enabled
+        self.notification_self_studio_only = self.state.config.notification_self_studio_only
         self.edit_mode = False
+        self.force_quit = False
+        self.tray_icon: QSystemTrayIcon | None = None
+        self.tray_menu: QMenu | None = None
+        self.reservation_alerted_at: dict[str, datetime] = {}
 
         self.signals = ReservationSignals()
         self.signals.loaded.connect(self.on_reservations_loaded)
@@ -231,6 +281,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(980, 620)
 
         self.build_ui()
+        self.setup_tray()
         self.apply_style()
         self.refresh()
         self.load_reservations()
@@ -243,11 +294,128 @@ class MainWindow(QMainWindow):
         self.reservation_timer.timeout.connect(self.load_reservations)
         self.reservation_timer.start(30000)
 
+    def setup_tray(self) -> None:
+        if not self.background_enabled:
+            self.teardown_tray()
+            return
+
+        if self.tray_icon is not None:
+            self.update_tray_menu()
+            self.tray_icon.show()
+            return
+
+        icon = app_icon(self.theme)
+        self.setWindowIcon(icon)
+
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        self.tray_icon = QSystemTrayIcon(icon, self)
+        self.tray_icon.setToolTip("CDE Studio")
+
+        self.tray_menu = QMenu(self)
+        self.tray_icon.setContextMenu(self.tray_menu)
+        self.update_tray_menu()
+        self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.show()
+
+    def update_tray_menu(self) -> None:
+        if self.tray_menu is None:
+            return
+
+        self.tray_menu.clear()
+
+        show_action = QAction("열기", self)
+        show_action.triggered.connect(self.show_from_background)
+
+        hide_action = QAction("백그라운드로 숨기기", self)
+        hide_action.triggered.connect(self.hide_to_background)
+
+        pending_items = self.pending_checkin_items(datetime.now())
+        pending_action = QAction(f"입실 대기: {len(pending_items)}건", self)
+        pending_action.setEnabled(False)
+
+        self.tray_menu.addAction(show_action)
+        self.tray_menu.addAction(hide_action)
+        self.tray_menu.addSeparator()
+        self.tray_menu.addAction(pending_action)
+
+        for item, start_at, alert_type in pending_items[:5]:
+            label = "미입실" if alert_type == "overdue" else "준비"
+            detail = QAction(f"{label} · {start_at.strftime('%H:%M')} {item.get('rpName', '')}", self)
+            detail.setEnabled(False)
+            self.tray_menu.addAction(detail)
+
+        if len(pending_items) > 5:
+            more_action = QAction(f"외 {len(pending_items) - 5}건", self)
+            more_action.setEnabled(False)
+            self.tray_menu.addAction(more_action)
+
+        quit_action = QAction("종료", self)
+        quit_action.triggered.connect(self.quit_app)
+        self.tray_menu.addSeparator()
+        self.tray_menu.addAction(quit_action)
+
+    def teardown_tray(self) -> None:
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
+            self.tray_icon.deleteLater()
+            self.tray_icon = None
+            self.tray_menu = None
+
+    def on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in {
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        }:
+            self.show_from_background()
+
+    def show_from_background(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def hide_to_background(self) -> None:
+        self.hide()
+
+    def quit_app(self) -> None:
+        self.force_quit = True
+        if self.tray_icon is not None:
+            self.tray_icon.hide()
+        self.close()
+        QApplication.quit()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self.force_quit or not self.background_enabled or self.tray_icon is None:
+            super().closeEvent(event)
+            QApplication.quit()
+            return
+
+        event.ignore()
+        self.hide()
+
+    def open_settings(self) -> None:
+        dialog = SettingsDialog(self)
+        dialog.exec()
+
+    def set_background_enabled(self, enabled: bool) -> None:
+        self.background_enabled = enabled
+        save_ui_settings(background_enabled=self.background_enabled)
+        if enabled:
+            self.setup_tray()
+        else:
+            self.teardown_tray()
+
+    def set_notification_self_studio_only(self, enabled: bool) -> None:
+        self.notification_self_studio_only = enabled
+        save_ui_settings(notification_self_studio_only=self.notification_self_studio_only)
+        self.update_tray_menu()
+
     def build_ui(self) -> None:
         self.sidebar = QFrame()
         self.sidebar.setObjectName("sidebar")
         self.sidebar.setFixedWidth(282)
-        self.sidebar.setVisible(False)
+        self.sidebar.setVisible(self.sidebar_open)
         add_shadow(self.sidebar, blur=24, offset_y=8, alpha=12)
 
         self.sidebar_title = QLabel("룸 목록")
@@ -326,11 +494,17 @@ class MainWindow(QMainWindow):
 
         self.theme_switch = ThemeSwitch(self.change_theme)
 
+        self.settings_button = QPushButton("설정")
+        self.settings_button.setObjectName("settingsButton")
+        self.settings_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.settings_button.clicked.connect(self.open_settings)
+
         self.sidebar_button = QPushButton("☰")
         self.sidebar_button.setObjectName("menuButton")
         self.sidebar_button.setToolTip("룸 목록")
         self.sidebar_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.sidebar_button.setFixedSize(38, 38)
+        self.sidebar_button.setProperty("selected", self.sidebar_open)
         self.sidebar_button.clicked.connect(self.toggle_sidebar)
 
         top_bar = QHBoxLayout()
@@ -339,6 +513,7 @@ class MainWindow(QMainWindow):
         top_bar.addWidget(self.sidebar_button)
         top_bar.addWidget(self.app_label)
         top_bar.addStretch(1)
+        top_bar.addWidget(self.settings_button)
         top_bar.addWidget(self.theme_switch)
         top_bar.addWidget(self.local_label)
 
@@ -371,6 +546,7 @@ class MainWindow(QMainWindow):
         self.self_studio_filter = QCheckBox("셀프(1인)스튜디오만")
         self.self_studio_filter.setObjectName("selfStudioFilter")
         self.self_studio_filter.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.self_studio_filter.setChecked(self.self_studio_only)
         self.self_studio_filter.toggled.connect(self.toggle_self_studio_filter)
 
         self.refresh_button = QPushButton("새로고침")
@@ -564,12 +740,15 @@ class MainWindow(QMainWindow):
 
     def on_reservations_loaded(self, target_date: str, items: list[dict], error: bool) -> None:
         self.reservation_date = target_date
+        self.reservation_checkins = self.state.checked_in_reservations(self.reservation_date)
         self.reservations = items
         self.reservation_error = error
         self.reservation_updated_at = datetime.now().strftime("%H:%M 업데이트")
         self.refresh_button.setEnabled(True)
         self.refresh_button.setText("새로고침")
         self.render_reservations()
+        self.notify_checkin_alerts()
+        self.update_tray_menu()
 
     def select_all_reservations(self) -> None:
         self.selected_room_id = None
@@ -583,6 +762,7 @@ class MainWindow(QMainWindow):
         self.sidebar_open = not self.sidebar_open
         self.sidebar.setVisible(self.sidebar_open)
         self.sidebar_button.setProperty("selected", self.sidebar_open)
+        save_ui_settings(sidebar_open=self.sidebar_open)
         refresh_one(self.sidebar_button)
 
     def toggle_edit_mode(self) -> None:
@@ -594,12 +774,92 @@ class MainWindow(QMainWindow):
             self.reservation_checkins.remove(key)
         else:
             self.reservation_checkins.add(key)
+        self.state.save_checked_in_reservations(self.reservation_date, self.reservation_checkins)
         row = self.reservation_rows.get(key)
         if row is not None:
             row.set_checked_in(key in self.reservation_checkins)
+        self.update_tray_menu()
+
+    def pending_checkin_items(self, now: datetime) -> list[tuple[dict, datetime, str]]:
+        pending = []
+        for item in self.reservations:
+            key = reservation_key(item)
+            if key in self.reservation_checkins:
+                continue
+            if self.notification_self_studio_only and not reservation_is_self_studio(item):
+                continue
+
+            start_at = reservation_start_datetime(item, self.reservation_date)
+            if start_at is None:
+                continue
+            if now < start_at - timedelta(minutes=PREP_ALERT_MINUTES):
+                continue
+
+            alert_type = "overdue" if now >= start_at + timedelta(minutes=CHECKIN_GRACE_MINUTES) else "prep"
+            pending.append((item, start_at, alert_type))
+
+        return sorted(pending, key=lambda value: value[1])
+
+    def notify_checkin_alerts(self) -> None:
+        if self.reservation_error or not self.reservations:
+            return
+        if not self.background_enabled:
+            return
+
+        if self.tray_icon is None:
+            self.setup_tray()
+        if self.tray_icon is None:
+            return
+
+        now = datetime.now()
+        alert_items = []
+        for item, start_at, alert_type in self.pending_checkin_items(now):
+            key = reservation_key(item)
+            alert_key = f"{self.reservation_date}|{key}|{alert_type}"
+            last_alert_at = self.reservation_alerted_at.get(alert_key)
+            if last_alert_at is not None and now < last_alert_at + timedelta(minutes=ALERT_REPEAT_MINUTES):
+                continue
+
+            alert_items.append((alert_key, item, start_at, alert_type))
+
+        if not alert_items:
+            return
+
+        for alert_key, _, _, _ in alert_items:
+            self.reservation_alerted_at[alert_key] = now
+
+        first_item = alert_items[0][1]
+        first_start_at = alert_items[0][2]
+        has_overdue = any(alert_type == "overdue" for _, _, _, alert_type in alert_items)
+        if len(alert_items) == 1:
+            title = "입실 확인 필요" if has_overdue else "스튜디오 준비 알림"
+            body = (
+                "예약 시작 후 20분이 지났지만 입실 처리되지 않았습니다."
+                if has_overdue
+                else "예약 30분 전입니다. 스튜디오 준비를 확인하세요."
+            )
+            message = (
+                f"{first_start_at.strftime('%H:%M')} {first_item.get('rpName', '')}\n"
+                f"{body}"
+            )
+        else:
+            title = "입실 확인 필요" if has_overdue else "스튜디오 준비 알림"
+            overdue_count = sum(1 for _, _, _, alert_type in alert_items if alert_type == "overdue")
+            message = (
+                f"{first_start_at.strftime('%H:%M')} {first_item.get('rpName', '')} 외 {len(alert_items) - 1}건\n"
+                f"미입실 {overdue_count}건, 준비 대상 {len(alert_items) - overdue_count}건이 있습니다."
+            )
+
+        self.tray_icon.showMessage(
+            title,
+            message,
+            QSystemTrayIcon.MessageIcon.Warning,
+            10000,
+        )
 
     def toggle_self_studio_filter(self, checked: bool) -> None:
         self.self_studio_only = checked
+        save_ui_settings(self_studio_only=self.self_studio_only)
         self.render_reservations()
 
     def prompt_add_room(self) -> None:
@@ -677,6 +937,10 @@ class MainWindow(QMainWindow):
             QColor("#1c1c1e" if self.theme == "dark" else "#f5f5f7"),
         )
         self.setPalette(palette)
+        icon = app_icon(self.theme)
+        self.setWindowIcon(icon)
+        if self.tray_icon is not None:
+            self.tray_icon.setIcon(icon)
         refresh_style(self.root)
 
 
@@ -788,7 +1052,8 @@ QFrame#roomManage {
     border-radius: 8px;
 }
 QPushButton#addRoomButton,
-QPushButton#refreshButton {
+QPushButton#refreshButton,
+QPushButton#settingsButton {
     background: #0071e3;
     border: 0;
     border-radius: 8px;
@@ -796,13 +1061,42 @@ QPushButton#refreshButton {
     font-weight: 800;
 }
 QPushButton#addRoomButton,
-QPushButton#refreshButton {
+QPushButton#refreshButton,
+QPushButton#settingsButton {
     font-size: 13px;
     padding: 9px 12px;
 }
 QPushButton#addRoomButton:hover,
-QPushButton#refreshButton:hover {
+QPushButton#refreshButton:hover,
+QPushButton#settingsButton:hover {
     background: #0077ed;
+}
+QPushButton#settingsButton {
+    background: rgba(255, 255, 255, 0.82);
+    border: 1px solid #e5e5ea;
+    color: #1d1d1f;
+}
+QPushButton#settingsButton:hover {
+    background: #ffffff;
+    border: 1px solid #c7c7cc;
+}
+QLabel#settingsTitle {
+    color: #1d1d1f;
+    font-size: 18px;
+    font-weight: 800;
+}
+QDialog {
+    background: #f5f5f7;
+}
+QCheckBox#settingsCheck {
+    color: #3a3a3c;
+    font-size: 14px;
+    font-weight: 800;
+    spacing: 8px;
+}
+QCheckBox#settingsCheck::indicator {
+    height: 16px;
+    width: 16px;
 }
 QPushButton#menuButton {
     background: rgba(255, 255, 255, 0.82);
@@ -1034,6 +1328,26 @@ QWidget#appRoot[theme="dark"] QPushButton#menuButton[selected="true"] {
     background: #3a3a3c;
     border: 1px solid #636366;
 }
+QWidget#appRoot[theme="dark"] QPushButton#settingsButton {
+    background: rgba(44, 44, 46, 0.86);
+    border: 1px solid #3a3a3c;
+    color: #f5f5f7;
+}
+QWidget#appRoot[theme="dark"] QPushButton#settingsButton:hover {
+    background: #3a3a3c;
+    border: 1px solid #636366;
+}
+QWidget#appRoot[theme="dark"] QLabel#settingsTitle,
+QWidget#appRoot[theme="dark"] QCheckBox#settingsCheck {
+    color: #f5f5f7;
+}
+QDialog[theme="dark"] {
+    background: #1c1c1e;
+}
+QDialog[theme="dark"] QLabel#settingsTitle,
+QDialog[theme="dark"] QCheckBox#settingsCheck {
+    color: #f5f5f7;
+}
 QWidget#appRoot[theme="dark"] QPushButton#editButton {
     color: #0a84ff;
 }
@@ -1077,6 +1391,30 @@ def add_shadow(widget: QWidget, blur: int, offset_y: int, alpha: int) -> None:
     widget.setGraphicsEffect(shadow)
 
 
+def app_icon(theme: str) -> QIcon:
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    background = QColor("#f5f5f7" if theme == "dark" else "#1d1d1f")
+    accent = QColor("#0a84ff" if theme == "dark" else "#0071e3")
+    text = QColor("#1d1d1f" if theme == "dark" else "#ffffff")
+
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(background))
+    painter.drawRoundedRect(QRectF(6, 6, 52, 52), 14, 14)
+    painter.setBrush(QBrush(accent))
+    painter.drawRoundedRect(QRectF(13, 40, 38, 7), 3.5, 3.5)
+    painter.setPen(QPen(text))
+    font = QFont("Arial", 20, QFont.Weight.Black)
+    painter.setFont(font)
+    painter.drawText(QRectF(6, 8, 52, 32), Qt.AlignmentFlag.AlignCenter, "C")
+    painter.end()
+
+    return QIcon(pixmap)
+
+
 def refresh_one(widget: QWidget) -> None:
     widget.style().unpolish(widget)
     widget.style().polish(widget)
@@ -1105,6 +1443,41 @@ def reservation_time(item: dict) -> str:
     if start and end:
         return f"{start} - {end}"
     return start or end or "시간 없음"
+
+
+def reservation_start_datetime(item: dict, target_date: str) -> datetime | None:
+    start = str(item.get("rrStartTime", "")).strip()
+    if not start:
+        return None
+
+    candidates = []
+    if "T" in start or "-" in start:
+        candidates.append(start)
+    else:
+        candidates.extend(
+            [
+                f"{target_date}T{start}",
+                f"{target_date} {start}",
+            ]
+        )
+
+    for candidate in candidates:
+        try:
+            parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is not None:
+            return parsed.astimezone().replace(tzinfo=None)
+        return parsed
+
+    for time_format in ("%H:%M", "%H:%M:%S"):
+        try:
+            parsed_time = datetime.strptime(start, time_format).time()
+            return datetime.combine(date.fromisoformat(target_date), parsed_time)
+        except ValueError:
+            continue
+
+    return None
 
 
 def reservation_meta(item: dict) -> str:
@@ -1204,6 +1577,7 @@ def run() -> None:
     state = RoomState(config)
 
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     window = MainWindow(state)
     window.show()
     sys.exit(app.exec())

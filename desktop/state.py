@@ -20,6 +20,10 @@ def utc_now() -> str:
 class AppConfig:
     rooms: list[str]
     theme: str
+    self_studio_only: bool
+    sidebar_open: bool
+    background_enabled: bool
+    notification_self_studio_only: bool
 
 
 def load_config() -> AppConfig:
@@ -30,6 +34,10 @@ def load_config() -> AppConfig:
     return AppConfig(
         rooms=[str(room) for room in data.get("rooms", ["1호실", "2호실", "3호실", "4호실"])],
         theme=theme,
+        self_studio_only=bool(data.get("self_studio_only", False)),
+        sidebar_open=bool(data.get("sidebar_open", False)),
+        background_enabled=bool(data.get("background_enabled", True)),
+        notification_self_studio_only=bool(data.get("notification_self_studio_only", True)),
     )
 
 
@@ -37,8 +45,31 @@ def save_theme(theme: str) -> None:
     if theme not in {"light", "dark"}:
         return
 
+    save_config_values(theme=theme)
+
+
+def save_ui_settings(
+    *,
+    self_studio_only: bool | None = None,
+    sidebar_open: bool | None = None,
+    background_enabled: bool | None = None,
+    notification_self_studio_only: bool | None = None,
+) -> None:
+    values = {}
+    if self_studio_only is not None:
+        values["self_studio_only"] = bool(self_studio_only)
+    if sidebar_open is not None:
+        values["sidebar_open"] = bool(sidebar_open)
+    if background_enabled is not None:
+        values["background_enabled"] = bool(background_enabled)
+    if notification_self_studio_only is not None:
+        values["notification_self_studio_only"] = bool(notification_self_studio_only)
+    save_config_values(**values)
+
+
+def save_config_values(**values: object) -> None:
     data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    data["theme"] = theme
+    data.update(values)
     CONFIG_PATH.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -57,12 +88,24 @@ def save_config_rooms(rooms: list[str]) -> None:
 class RoomState:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.rooms = self._load_or_create_rooms()
+        self._data = self._load_state_data()
+        self.rooms = self._load_or_create_rooms(self._data)
+        self.reservation_checkins = self._load_reservation_checkins(self._data)
 
     def snapshot(self) -> dict:
         return {
             "rooms": [dict(room) for room in self.rooms],
         }
+
+    def checked_in_reservations(self, reservation_date: str) -> set[str]:
+        values = self.reservation_checkins.get(reservation_date, [])
+        if not isinstance(values, list):
+            return set()
+        return {str(value) for value in values}
+
+    def save_checked_in_reservations(self, reservation_date: str, keys: set[str]) -> None:
+        self.reservation_checkins[reservation_date] = sorted(str(key) for key in keys)
+        self._save()
 
     def toggle_room(self, room_id: int) -> dict:
         now = utc_now()
@@ -113,13 +156,17 @@ class RoomState:
         self._save_config_rooms()
         return room
 
-    def _load_or_create_rooms(self) -> list[dict]:
-        if STATE_PATH.exists():
-            data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-            rooms = data.get("rooms")
-            if rooms:
-                self._normalize_rooms(rooms)
-                return rooms
+    def _load_state_data(self) -> dict:
+        if not STATE_PATH.exists():
+            return {}
+        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+
+    def _load_or_create_rooms(self, data: dict) -> list[dict]:
+        rooms = data.get("rooms")
+        if rooms:
+            self._normalize_rooms(rooms)
+            return rooms
 
         now = utc_now()
         return [
@@ -132,11 +179,25 @@ class RoomState:
             for index, name in enumerate(self.config.rooms)
         ]
 
+    def _load_reservation_checkins(self, data: dict) -> dict[str, list[str]]:
+        checkins = data.get("reservation_checkins", {})
+        if not isinstance(checkins, dict):
+            return {}
+
+        normalized = {}
+        for reservation_date, keys in checkins.items():
+            if isinstance(keys, list):
+                normalized[str(reservation_date)] = [str(key) for key in keys]
+        return normalized
+
     def _save(self) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(
             json.dumps(
-                {"rooms": self.rooms},
+                {
+                    "rooms": self.rooms,
+                    "reservation_checkins": self.reservation_checkins,
+                },
                 ensure_ascii=False,
                 indent=2,
             ),
