@@ -117,6 +117,7 @@ class RoomState:
         self._data = self._load_state_data()
         self.rooms = self._load_or_create_rooms(self._data)
         self.reservation_checkins = self._load_reservation_checkins(self._data)
+        self.reservation_preps = self._load_reservation_preps(self._data)
 
     def snapshot(self) -> dict:
         return {
@@ -131,6 +132,16 @@ class RoomState:
 
     def save_checked_in_reservations(self, reservation_date: str, keys: set[str]) -> None:
         self.reservation_checkins[reservation_date] = sorted(str(key) for key in keys)
+        self._save()
+
+    def prepared_reservations(self, reservation_date: str) -> set[str]:
+        values = self.reservation_preps.get(reservation_date, [])
+        if not isinstance(values, list):
+            return set()
+        return {str(value) for value in values}
+
+    def save_prepared_reservations(self, reservation_date: str, keys: set[str]) -> None:
+        self.reservation_preps[reservation_date] = sorted(str(key) for key in keys)
         self._save()
 
     def toggle_room(self, room_id: int) -> dict:
@@ -216,6 +227,17 @@ class RoomState:
                 normalized[str(reservation_date)] = [str(key) for key in keys]
         return normalized
 
+    def _load_reservation_preps(self, data: dict) -> dict[str, list[str]]:
+        preps = data.get("reservation_preps", {})
+        if not isinstance(preps, dict):
+            return {}
+
+        normalized = {}
+        for reservation_date, keys in preps.items():
+            if isinstance(keys, list):
+                normalized[str(reservation_date)] = [str(key) for key in keys]
+        return normalized
+
     def _save(self) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(
@@ -223,6 +245,7 @@ class RoomState:
                 {
                     "rooms": self.rooms,
                     "reservation_checkins": self.reservation_checkins,
+                    "reservation_preps": self.reservation_preps,
                 },
                 ensure_ascii=False,
                 indent=2,

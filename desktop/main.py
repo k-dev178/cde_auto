@@ -36,12 +36,11 @@ from desktop.state import RoomState, load_config, save_theme, save_ui_settings
 BASE_URL = "https://cde.jj.ac.kr/_custom/jj/_common/app/room-reservation/logic/ajax.jsp"
 WEEKDAYS = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
 PREP_ALERT_MINUTES = 30
-CHECKIN_GRACE_MINUTES = 20
 ALERT_REPEAT_MINUTES = 5
 
 
 class ReservationSignals(QObject):
-    loaded = Signal(str, object, bool)
+    loaded = Signal(str, object, bool, bool)
 
 
 class AllReservationsItem(QFrame):
@@ -157,13 +156,18 @@ class ReservationRow(QFrame):
         self,
         item: dict,
         checked_in: bool,
+        prepared: bool,
         on_toggle_checkin: Callable[[str], None],
+        on_toggle_prep: Callable[[str], None],
     ) -> None:
         super().__init__()
         self.item = item
         self.key = reservation_key(item)
         self.on_toggle_checkin = on_toggle_checkin
+        self.on_toggle_prep = on_toggle_prep
         self.setObjectName("reservationRow")
+        self.setProperty("checked_in", checked_in)
+        self.setProperty("prepared", prepared)
 
         time_label = QLabel(reservation_time(item))
         time_label.setObjectName("reservationTime")
@@ -189,12 +193,20 @@ class ReservationRow(QFrame):
         self.checkin_button.setProperty("checked", checked_in)
         self.checkin_button.clicked.connect(lambda: self.on_toggle_checkin(self.key))
 
+        self.prep_button = QPushButton("준비완료" if prepared else "준비")
+        self.prep_button.setObjectName("reservationPrep")
+        self.prep_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.prep_button.setProperty("checked", prepared)
+        self.prep_button.clicked.connect(lambda: self.on_toggle_prep(self.key))
+        self.prep_button.setVisible(reservation_is_self_studio(item))
+
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(10)
         top.addWidget(time_label)
         top.addStretch(1)
         top.addWidget(state_label)
+        top.addWidget(self.prep_button)
         top.addWidget(self.checkin_button)
 
         layout = QVBoxLayout(self)
@@ -209,6 +221,15 @@ class ReservationRow(QFrame):
         self.checkin_button.setText("입실완료" if checked_in else "입실")
         self.checkin_button.setProperty("checked", checked_in)
         refresh_one(self.checkin_button)
+        self.setProperty("checked_in", checked_in)
+        refresh_one(self)
+
+    def set_prepared(self, prepared: bool) -> None:
+        self.prep_button.setText("준비완료" if prepared else "준비")
+        self.prep_button.setProperty("checked", prepared)
+        refresh_one(self.prep_button)
+        self.setProperty("prepared", prepared)
+        refresh_one(self)
 
 
 class SettingsDialog(QDialog):
@@ -261,6 +282,7 @@ class MainWindow(QMainWindow):
         self.reservation_date = date.today().strftime("%Y-%m-%d")
         self.reservation_updated_at = ""
         self.reservation_checkins = self.state.checked_in_reservations(self.reservation_date)
+        self.reservation_preps = self.state.prepared_reservations(self.reservation_date)
         self.reservation_rows: dict[str, ReservationRow] = {}
         self.room_items: dict[int, RoomListItem] = {}
         self.self_studio_only = self.state.config.self_studio_only
@@ -291,8 +313,8 @@ class MainWindow(QMainWindow):
         self.clock_timer.start(30000)
 
         self.reservation_timer = QTimer(self)
-        self.reservation_timer.timeout.connect(self.load_reservations)
-        self.reservation_timer.start(30000)
+        self.reservation_timer.timeout.connect(self.load_reservations_silently)
+        self.reservation_timer.start(60000)
 
     def setup_tray(self) -> None:
         if not self.background_enabled:
@@ -332,7 +354,7 @@ class MainWindow(QMainWindow):
         hide_action.triggered.connect(self.hide_to_background)
 
         pending_items = self.pending_checkin_items(datetime.now())
-        pending_action = QAction(f"입실 대기: {len(pending_items)}건", self)
+        pending_action = QAction(f"준비 대기: {len(pending_items)}건", self)
         pending_action.setEnabled(False)
 
         self.tray_menu.addAction(show_action)
@@ -341,7 +363,7 @@ class MainWindow(QMainWindow):
         self.tray_menu.addAction(pending_action)
 
         for item, start_at, alert_type in pending_items[:5]:
-            label = "미입실" if alert_type == "overdue" else "준비"
+            label = "미준비" if alert_type == "overdue" else "준비"
             detail = QAction(f"{label} · {start_at.strftime('%H:%M')} {item.get('rpName', '')}", self)
             detail.setEnabled(False)
             self.tray_menu.addAction(detail)
@@ -707,7 +729,13 @@ class MainWindow(QMainWindow):
 
         for item in items:
             key = reservation_key(item)
-            row = ReservationRow(item, key in self.reservation_checkins, self.toggle_reservation_checkin)
+            row = ReservationRow(
+                item,
+                key in self.reservation_checkins,
+                key in self.reservation_preps,
+                self.toggle_reservation_checkin,
+                self.toggle_reservation_prep,
+            )
             self.reservation_rows[key] = row
             self.reservation_list.addWidget(row)
 
@@ -728,24 +756,36 @@ class MainWindow(QMainWindow):
             return items
         return [item for item in items if reservation_matches_room(item, selected_room)]
 
-    def load_reservations(self) -> None:
-        self.refresh_button.setEnabled(False)
-        self.refresh_button.setText("불러오는 중")
+    def load_reservations(self, show_loading: bool = True) -> None:
+        if show_loading:
+            self.refresh_button.setEnabled(False)
+            self.refresh_button.setText("불러오는 중")
 
         def worker() -> None:
             target_date, items, error = fetch_today_reservations()
-            self.signals.loaded.emit(target_date, items, error)
+            self.signals.loaded.emit(target_date, items, error, show_loading)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def on_reservations_loaded(self, target_date: str, items: list[dict], error: bool) -> None:
+    def load_reservations_silently(self) -> None:
+        self.load_reservations(show_loading=False)
+
+    def on_reservations_loaded(
+        self,
+        target_date: str,
+        items: list[dict],
+        error: bool,
+        show_loading: bool,
+    ) -> None:
         self.reservation_date = target_date
         self.reservation_checkins = self.state.checked_in_reservations(self.reservation_date)
+        self.reservation_preps = self.state.prepared_reservations(self.reservation_date)
         self.reservations = items
         self.reservation_error = error
         self.reservation_updated_at = datetime.now().strftime("%H:%M 업데이트")
-        self.refresh_button.setEnabled(True)
-        self.refresh_button.setText("새로고침")
+        if show_loading:
+            self.refresh_button.setEnabled(True)
+            self.refresh_button.setText("새로고침")
         self.render_reservations()
         self.notify_checkin_alerts()
         self.update_tray_menu()
@@ -780,13 +820,24 @@ class MainWindow(QMainWindow):
             row.set_checked_in(key in self.reservation_checkins)
         self.update_tray_menu()
 
+    def toggle_reservation_prep(self, key: str) -> None:
+        if key in self.reservation_preps:
+            self.reservation_preps.remove(key)
+        else:
+            self.reservation_preps.add(key)
+        self.state.save_prepared_reservations(self.reservation_date, self.reservation_preps)
+        row = self.reservation_rows.get(key)
+        if row is not None:
+            row.set_prepared(key in self.reservation_preps)
+        self.update_tray_menu()
+
     def pending_checkin_items(self, now: datetime) -> list[tuple[dict, datetime, str]]:
         pending = []
         for item in self.reservations:
             key = reservation_key(item)
-            if key in self.reservation_checkins:
+            if key in self.reservation_preps:
                 continue
-            if self.notification_self_studio_only and not reservation_is_self_studio(item):
+            if not reservation_is_self_studio(item):
                 continue
 
             start_at = reservation_start_datetime(item, self.reservation_date)
@@ -795,7 +846,7 @@ class MainWindow(QMainWindow):
             if now < start_at - timedelta(minutes=PREP_ALERT_MINUTES):
                 continue
 
-            alert_type = "overdue" if now >= start_at + timedelta(minutes=CHECKIN_GRACE_MINUTES) else "prep"
+            alert_type = "overdue" if now >= start_at else "prep"
             pending.append((item, start_at, alert_type))
 
         return sorted(pending, key=lambda value: value[1])
@@ -832,22 +883,22 @@ class MainWindow(QMainWindow):
         first_start_at = alert_items[0][2]
         has_overdue = any(alert_type == "overdue" for _, _, _, alert_type in alert_items)
         if len(alert_items) == 1:
-            title = "입실 확인 필요" if has_overdue else "스튜디오 준비 알림"
+            title = "준비 완료 확인 필요" if has_overdue else "1인 스튜디오 준비 알림"
             body = (
-                "예약 시작 후 20분이 지났지만 입실 처리되지 않았습니다."
+                "예약 시간이 되었지만 준비 완료 처리가 되지 않았습니다."
                 if has_overdue
-                else "예약 30분 전입니다. 스튜디오 준비를 확인하세요."
+                else "예약 30분 전입니다. 1인 스튜디오 준비를 확인하세요."
             )
             message = (
                 f"{first_start_at.strftime('%H:%M')} {first_item.get('rpName', '')}\n"
                 f"{body}"
             )
         else:
-            title = "입실 확인 필요" if has_overdue else "스튜디오 준비 알림"
+            title = "준비 완료 확인 필요" if has_overdue else "1인 스튜디오 준비 알림"
             overdue_count = sum(1 for _, _, _, alert_type in alert_items if alert_type == "overdue")
             message = (
                 f"{first_start_at.strftime('%H:%M')} {first_item.get('rpName', '')} 외 {len(alert_items) - 1}건\n"
-                f"미입실 {overdue_count}건, 준비 대상 {len(alert_items) - overdue_count}건이 있습니다."
+                f"준비 미완료 {overdue_count}건, 30분 전 준비 대기 {len(alert_items) - overdue_count}건이 있습니다."
             )
 
         self.tray_icon.showMessage(
@@ -1175,6 +1226,18 @@ QFrame#reservationRow {
     border: 1px solid #eeeeF2;
     border-radius: 8px;
 }
+QFrame#reservationRow[prepared="true"] {
+    background: #fff8eb;
+    border: 1px solid #ff9500;
+}
+QFrame#reservationRow[checked_in="true"] {
+    background: #ecfdf5;
+    border: 1px solid #34c759;
+}
+QFrame#reservationRow[prepared="true"][checked_in="true"] {
+    background: #ecfdf5;
+    border: 2px solid #1f7a3f;
+}
 QLabel#reservationTime {
     color: #0071e3;
     font-size: 18px;
@@ -1208,17 +1271,39 @@ QLabel#reservationState[state="default"] {
     background: #f2f2f7;
     color: #6e6e73;
 }
-QPushButton#reservationCheckin {
+QPushButton#reservationCheckin,
+QPushButton#reservationPrep {
     border: 0;
     border-radius: 8px;
-    background: #0071e3;
     color: #ffffff;
     font-size: 12px;
     font-weight: 800;
+    min-width: 64px;
     padding: 7px 11px;
 }
+QPushButton#reservationCheckin {
+    background: #0071e3;
+}
+QPushButton#reservationPrep {
+    background: #ff9500;
+}
+QPushButton#reservationCheckin:hover {
+    background: #0077ed;
+}
+QPushButton#reservationPrep:hover {
+    background: #ff9f0a;
+}
 QPushButton#reservationCheckin[checked="true"] {
-    background: #8e8e93;
+    background: #1f7a3f;
+}
+QPushButton#reservationPrep[checked="true"] {
+    background: #34c759;
+}
+QPushButton#reservationCheckin[checked="true"]:hover {
+    background: #248a49;
+}
+QPushButton#reservationPrep[checked="true"]:hover {
+    background: #30b753;
 }
 QLabel#emptyState {
     color: #86868b;
@@ -1257,6 +1342,18 @@ QWidget#appRoot[theme="dark"] QFrame#reservationSurface {
 QWidget#appRoot[theme="dark"] QFrame#reservationRow {
     background: #2c2c2e;
     border: 1px solid #3a3a3c;
+}
+QWidget#appRoot[theme="dark"] QFrame#reservationRow[prepared="true"] {
+    background: #3a2b14;
+    border: 1px solid #ff9500;
+}
+QWidget#appRoot[theme="dark"] QFrame#reservationRow[checked_in="true"] {
+    background: #143522;
+    border: 1px solid #34c759;
+}
+QWidget#appRoot[theme="dark"] QFrame#reservationRow[prepared="true"][checked_in="true"] {
+    background: #143522;
+    border: 2px solid #30d158;
 }
 QWidget#appRoot[theme="dark"] QFrame#roomManage {
     background: #242426;
