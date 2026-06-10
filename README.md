@@ -36,12 +36,11 @@ dist\CDEStudio.exe
 ## 설정 초기화
 
 exe로 실행한 앱의 설정과 상태는 아래 폴더에 저장됩니다.
+설정을 전부 초기화하려면 앱을 종료한 뒤 이 폴더를 삭제하면 됩니다.
 
 ```text
-%LOCALAPPDATA%\CDEStudio
+C:\Users\{user명}\AppData\Local\CDEStudio
 ```
-
-설정을 전부 초기화하려면 앱을 종료한 뒤 이 폴더를 삭제하면 됩니다.
 
 개발 모드에서 `start_app.bat`로 실행한 경우에는 repo 안의 아래 파일/폴더를 삭제하면 됩니다.
 
