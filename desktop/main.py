@@ -432,6 +432,7 @@ class MainWindow(QMainWindow):
         self.notification_self_studio_only = enabled
         save_ui_settings(notification_self_studio_only=self.notification_self_studio_only)
         self.update_tray_menu()
+        self.notify_checkin_alerts()
 
     def build_ui(self) -> None:
         self.sidebar = QFrame()
@@ -837,7 +838,7 @@ class MainWindow(QMainWindow):
             key = reservation_key(item)
             if key in self.reservation_preps:
                 continue
-            if not reservation_is_self_studio(item):
+            if self.notification_self_studio_only and not reservation_is_self_studio(item):
                 continue
 
             start_at = reservation_start_datetime(item, self.reservation_date)
