@@ -43,6 +43,50 @@ async def _broadcast(event: str, data: dict) -> None:
 BASE_URL = "https://cde.jj.ac.kr/_custom/jj/_common/app/room-reservation/logic/ajax.jsp"
 WEEKDAY_KO = ["월", "화", "수", "목", "금", "토", "일"]
 
+STUDIO_SUMMARY_LABELS = [
+    "셀프(1인)스튜디오 1, 2호실(학생회관 238호)",
+    "셀프(1인)스튜디오 3, 4호실(교수연구동 9층)",
+    "MOOC 스튜디오",
+    "하이브리드 스튜디오",
+    "화상회의실(HATCH 스튜디오)",
+    "HATCH 스튜디오(블랙 스튜디오)",
+]
+
+
+def _studio_summary(day_data: dict[int, list]) -> list[tuple[str, int]]:
+    """예약 완료 건을 사용자에게 보여줄 6개 스튜디오 그룹으로 집계한다."""
+    counts = {label: 0 for label in STUDIO_SUMMARY_LABELS}
+
+    for items in day_data.values():
+        for item in items:
+            if item.get("rrState") != "예약완료":
+                continue
+
+            name = "".join(str(item.get("rpName", "")).split())
+            if name.startswith(("셀프(1인)스튜디오1호실", "셀프(1인)스튜디오2호실")):
+                label = STUDIO_SUMMARY_LABELS[0]
+            elif name.startswith(("셀프(1인)스튜디오3호실", "셀프(1인)스튜디오4호실")):
+                label = STUDIO_SUMMARY_LABELS[1]
+            else:
+                label = next(
+                    (candidate for candidate in STUDIO_SUMMARY_LABELS[2:]
+                     if name == "".join(candidate.split())),
+                    None,
+                )
+            if label:
+                counts[label] += 1
+
+    return [(label, counts[label]) for label in STUDIO_SUMMARY_LABELS]
+
+
+def _summary_lines(y: int, m: int, day_data: dict[int, list]) -> list[str]:
+    summary = _studio_summary(day_data)
+    total = sum(count for _, count in summary)
+    return [
+        f"• {m}월 스튜디오·기자재 대여 요약(총 {total}건)",
+        *(f" - {label}: {count}건" for label, count in summary),
+    ]
+
 
 def _fetch(d: str) -> list | None:
     try:
@@ -238,6 +282,18 @@ async def export_excel(year: int | None = None, month: int | None = None):
 
     if cur == 1:
         ws.cell(row=1, column=1, value=f"{y}년 {m}월 예약 내역 없음")
+        cur = 3
+
+    # 월별 대여 요약
+    for index, line in enumerate(_summary_lines(y, m, day_data)):
+        ws.merge_cells(start_row=cur, start_column=1, end_row=cur, end_column=3)
+        cell = ws.cell(row=cur, column=1, value=line)
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+        if index == 0:
+            cell.font = Font(bold=True, color="1E3A8A", size=11)
+        else:
+            cell.font = Font(size=10)
+        cur += 1
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -360,6 +416,9 @@ async def export_txt(year: int | None = None, month: int | None = None):
             lines.append(f"{studio} | {booker} | {purpose}")
 
         lines.append("")
+
+    lines.extend(_summary_lines(y, m, day_data))
+    lines.append("")
 
     content = "\n".join(lines)
     buf = io.BytesIO(content.encode("utf-8-sig"))  # BOM 포함 → 메모장 한글 깨짐 방지
