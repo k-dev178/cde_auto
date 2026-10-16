@@ -17,11 +17,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -31,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from desktop.state import RoomState, load_config, save_theme, save_ui_settings
+from desktop.theme import GlassBackdrop, GlassPanel, glass_stylesheet
 
 
 BASE_URL = "https://cde.jj.ac.kr/_custom/jj/_common/app/room-reservation/logic/ajax.jsp"
@@ -189,16 +188,22 @@ class ReservationRow(QFrame):
 
         self.checkin_button = QPushButton("입실완료" if checked_in else "입실")
         self.checkin_button.setObjectName("reservationCheckin")
+        self.checkin_button.setCheckable(True)
         self.checkin_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.checkin_button.setProperty("checked", checked_in)
         self.checkin_button.clicked.connect(lambda: self.on_toggle_checkin(self.key))
 
         self.prep_button = QPushButton("준비완료" if prepared else "준비")
         self.prep_button.setObjectName("reservationPrep")
+        self.prep_button.setCheckable(True)
         self.prep_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.prep_button.setProperty("checked", prepared)
         self.prep_button.clicked.connect(lambda: self.on_toggle_prep(self.key))
         self.prep_button.setVisible(reservation_is_self_studio(item))
+
+        # Keep long studio names and purposes within the glass card.
+        studio_label.setWordWrap(True)
+        meta_label.setWordWrap(True)
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -210,7 +215,7 @@ class ReservationRow(QFrame):
         top.addWidget(self.checkin_button)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(8)
         layout.addLayout(top)
         layout.addWidget(studio_label)
@@ -289,7 +294,6 @@ class MainWindow(QMainWindow):
         self.sidebar_open = self.state.config.sidebar_open
         self.background_enabled = self.state.config.background_enabled
         self.notification_self_studio_only = self.state.config.notification_self_studio_only
-        self.edit_mode = False
         self.force_quit = False
         self.tray_icon: QSystemTrayIcon | None = None
         self.tray_menu: QMenu | None = None
@@ -435,26 +439,14 @@ class MainWindow(QMainWindow):
         self.notify_checkin_alerts()
 
     def build_ui(self) -> None:
-        self.sidebar = QFrame()
+        self.sidebar = GlassPanel()
         self.sidebar.setObjectName("sidebar")
-        self.sidebar.setFixedWidth(282)
+        self.sidebar.setFixedWidth(258)
         self.sidebar.setVisible(self.sidebar_open)
-        add_shadow(self.sidebar, blur=24, offset_y=8, alpha=12)
+        add_shadow(self.sidebar, blur=32, offset_y=10, alpha=22)
 
         self.sidebar_title = QLabel("룸 목록")
         self.sidebar_title.setObjectName("sidebarTitle")
-
-        self.edit_button = QPushButton("편집")
-        self.edit_button.setObjectName("editButton")
-        self.edit_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.edit_button.clicked.connect(self.toggle_edit_mode)
-
-        sidebar_header = QHBoxLayout()
-        sidebar_header.setContentsMargins(0, 0, 0, 0)
-        sidebar_header.setSpacing(8)
-        sidebar_header.addWidget(self.sidebar_title)
-        sidebar_header.addStretch(1)
-        sidebar_header.addWidget(self.edit_button)
 
         self.sidebar_summary = QLabel()
         self.sidebar_summary.setObjectName("sidebarSummary")
@@ -472,48 +464,19 @@ class MainWindow(QMainWindow):
         room_scroll = QScrollArea()
         room_scroll.setObjectName("roomListScroll")
         room_scroll.setWidgetResizable(True)
+        room_scroll.viewport().setAutoFillBackground(False)
         room_scroll.setWidget(room_list_container)
 
-        self.add_room_button = QPushButton("룸 추가")
-        self.add_room_button.setObjectName("addRoomButton")
-        self.add_room_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.add_room_button.clicked.connect(self.prompt_add_room)
-
-        self.rename_button = QPushButton("이름 변경")
-        self.rename_button.setObjectName("secondaryAction")
-        self.rename_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.rename_button.clicked.connect(self.prompt_rename_selected_room)
-
-        self.delete_button = QPushButton("삭제")
-        self.delete_button.setObjectName("dangerAction")
-        self.delete_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.delete_button.clicked.connect(self.confirm_delete_selected_room)
-
-        self.edit_controls = QFrame()
-        self.edit_controls.setObjectName("roomManage")
-        edit_controls_layout = QVBoxLayout(self.edit_controls)
-        edit_controls_layout.setContentsMargins(12, 12, 12, 12)
-        edit_controls_layout.setSpacing(8)
-        edit_controls_layout.addWidget(self.add_room_button)
-        edit_controls_layout.addWidget(self.rename_button)
-        edit_controls_layout.addWidget(self.delete_button)
-        self.edit_controls.setVisible(False)
-
         sidebar_layout = QVBoxLayout(self.sidebar)
-        sidebar_layout.setContentsMargins(16, 16, 16, 16)
-        sidebar_layout.setSpacing(12)
-        sidebar_layout.addLayout(sidebar_header)
+        sidebar_layout.setContentsMargins(18, 22, 18, 18)
+        sidebar_layout.setSpacing(16)
+        sidebar_layout.addWidget(self.sidebar_title)
         sidebar_layout.addWidget(self.sidebar_summary)
         sidebar_layout.addWidget(self.all_item)
         sidebar_layout.addWidget(room_scroll, 1)
-        sidebar_layout.addWidget(self.edit_controls)
 
         self.app_label = QLabel("CDE Studio")
         self.app_label.setObjectName("appLabel")
-
-        self.local_label = QLabel("로컬")
-        self.local_label.setObjectName("localLabel")
-        self.local_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.theme_switch = ThemeSwitch(self.change_theme)
 
@@ -530,15 +493,17 @@ class MainWindow(QMainWindow):
         self.sidebar_button.setProperty("selected", self.sidebar_open)
         self.sidebar_button.clicked.connect(self.toggle_sidebar)
 
-        top_bar = QHBoxLayout()
-        top_bar.setContentsMargins(0, 0, 0, 0)
+        self.top_bar = GlassPanel(radius=24)
+        self.top_bar.setObjectName("topBar")
+        add_shadow(self.top_bar, blur=24, offset_y=5, alpha=14)
+        top_bar = QHBoxLayout(self.top_bar)
+        top_bar.setContentsMargins(10, 8, 12, 8)
         top_bar.setSpacing(8)
         top_bar.addWidget(self.sidebar_button)
         top_bar.addWidget(self.app_label)
         top_bar.addStretch(1)
         top_bar.addWidget(self.settings_button)
         top_bar.addWidget(self.theme_switch)
-        top_bar.addWidget(self.local_label)
 
         self.title = QLabel("전주대 CDE 예약 목록")
         self.title.setObjectName("title")
@@ -556,15 +521,33 @@ class MainWindow(QMainWindow):
         title_stack.addWidget(self.status_summary)
         title_stack.addWidget(self.today)
 
-        self.reservation_surface = QFrame()
+        self.reservation_surface = GlassPanel()
         self.reservation_surface.setObjectName("reservationSurface")
-        add_shadow(self.reservation_surface, blur=28, offset_y=10, alpha=14)
+        add_shadow(self.reservation_surface, blur=36, offset_y=12, alpha=22)
 
         self.reservation_title = QLabel("오늘 예약")
         self.reservation_title.setObjectName("reservationTitle")
 
         self.reservation_meta = QLabel("불러오는 중")
         self.reservation_meta.setObjectName("reservationMetaHeader")
+
+        self.prev_date_button = QPushButton("‹")
+        self.prev_date_button.setObjectName("dateNavButton")
+        self.prev_date_button.setToolTip("이전 날짜")
+        self.prev_date_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.prev_date_button.setFixedSize(34, 34)
+        self.prev_date_button.clicked.connect(lambda: self.shift_reservation_date(-1))
+
+        self.reservation_date_label = QLabel(self.selected_reservation_label())
+        self.reservation_date_label.setObjectName("reservationDateLabel")
+        self.reservation_date_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.next_date_button = QPushButton("›")
+        self.next_date_button.setObjectName("dateNavButton")
+        self.next_date_button.setToolTip("다음 날짜")
+        self.next_date_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.next_date_button.setFixedSize(34, 34)
+        self.next_date_button.clicked.connect(lambda: self.shift_reservation_date(1))
 
         self.self_studio_filter = QCheckBox("셀프(1인)스튜디오만")
         self.self_studio_filter.setObjectName("selfStudioFilter")
@@ -578,17 +561,32 @@ class MainWindow(QMainWindow):
         self.refresh_button.clicked.connect(self.load_reservations)
 
         reservation_header = QHBoxLayout()
-        reservation_header.setContentsMargins(18, 16, 18, 6)
+        reservation_header.setContentsMargins(24, 22, 24, 0)
         reservation_header.setSpacing(10)
         reservation_header.addWidget(self.reservation_title)
         reservation_header.addWidget(self.reservation_meta)
         reservation_header.addStretch(1)
-        reservation_header.addWidget(self.self_studio_filter)
         reservation_header.addWidget(self.refresh_button)
 
+        date_switch = QFrame()
+        date_switch.setObjectName("dateSwitch")
+        date_layout = QHBoxLayout(date_switch)
+        date_layout.setContentsMargins(3, 2, 3, 2)
+        date_layout.setSpacing(0)
+        date_layout.addWidget(self.prev_date_button)
+        date_layout.addWidget(self.reservation_date_label)
+        date_layout.addWidget(self.next_date_button)
+
+        reservation_toolbar = QHBoxLayout()
+        reservation_toolbar.setContentsMargins(24, 14, 24, 8)
+        reservation_toolbar.setSpacing(16)
+        reservation_toolbar.addWidget(date_switch)
+        reservation_toolbar.addStretch(1)
+        reservation_toolbar.addWidget(self.self_studio_filter)
+
         self.reservation_list = QVBoxLayout()
-        self.reservation_list.setContentsMargins(18, 8, 18, 18)
-        self.reservation_list.setSpacing(10)
+        self.reservation_list.setContentsMargins(20, 8, 20, 20)
+        self.reservation_list.setSpacing(12)
 
         reservation_list_container = QWidget()
         reservation_list_container.setObjectName("reservationListContainer")
@@ -597,18 +595,20 @@ class MainWindow(QMainWindow):
         reservation_scroll = QScrollArea()
         reservation_scroll.setObjectName("reservationScroll")
         reservation_scroll.setWidgetResizable(True)
+        reservation_scroll.viewport().setAutoFillBackground(False)
         reservation_scroll.setWidget(reservation_list_container)
 
         reservation_layout = QVBoxLayout(self.reservation_surface)
         reservation_layout.setContentsMargins(0, 0, 0, 0)
         reservation_layout.setSpacing(0)
         reservation_layout.addLayout(reservation_header)
+        reservation_layout.addLayout(reservation_toolbar)
         reservation_layout.addWidget(reservation_scroll, 1)
 
         center_layout = QVBoxLayout()
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(20)
-        center_layout.addLayout(top_bar)
+        center_layout.addWidget(self.top_bar)
         center_layout.addLayout(title_stack)
         center_layout.addWidget(self.reservation_surface, 1)
 
@@ -622,7 +622,7 @@ class MainWindow(QMainWindow):
         shell.addWidget(self.sidebar)
         shell.addWidget(center, 1)
 
-        self.root = QWidget()
+        self.root = GlassBackdrop()
         self.root.setObjectName("appRoot")
         self.root.setLayout(shell)
         self.setCentralWidget(self.root)
@@ -637,9 +637,9 @@ class MainWindow(QMainWindow):
             self.selected_room_id = None
 
         self.today.setText(today_label())
+        self.update_reservation_date_labels()
         self.sidebar_summary.setText(f"{len(rooms) - occupied}개 사용 가능 · {occupied}개 사용 중")
         self.render_room_list(rooms)
-        self.render_room_manage()
         self.render_reservations()
 
     def render_room_list(self, rooms: list[dict]) -> None:
@@ -656,24 +656,6 @@ class MainWindow(QMainWindow):
 
         self.room_list_layout.addStretch(1)
 
-    def render_room_manage(self) -> None:
-        room = self.find_room_snapshot(self.selected_room_id)
-        has_room = room is not None
-
-        self.edit_controls.setVisible(self.edit_mode)
-        self.edit_button.setText("완료" if self.edit_mode else "편집")
-        self.edit_button.setProperty("selected", self.edit_mode)
-        self.add_room_button.setVisible(self.edit_mode)
-        self.rename_button.setVisible(self.edit_mode)
-        self.delete_button.setVisible(self.edit_mode)
-        self.add_room_button.setEnabled(self.edit_mode)
-
-        for button in (self.rename_button, self.delete_button):
-            button.setEnabled(has_room)
-            refresh_one(button)
-        refresh_one(self.add_room_button)
-        refresh_one(self.edit_button)
-
     def render_reservations(self) -> None:
         clear_layout(self.reservation_list)
         self.reservation_rows = {}
@@ -685,7 +667,7 @@ class MainWindow(QMainWindow):
 
         if selected_room is None:
             self.reservation_title.setText(
-                "셀프(1인)스튜디오 예약" if self.self_studio_only else "오늘 예약"
+                "셀프(1인)스튜디오 예약" if self.self_studio_only else "예약 목록"
             )
         else:
             title = f"{selected_room['name']} 예약"
@@ -700,9 +682,9 @@ class MainWindow(QMainWindow):
             return
 
         if not self.reservations:
-            self.status_summary.setText("오늘 예약된 내역이 없습니다")
+            self.status_summary.setText(f"{self.selected_reservation_label()} 예약된 내역이 없습니다")
             self.reservation_meta.setText(self.reservation_updated_at or "업데이트 대기")
-            self.add_reservation_empty("오늘 예약된 내역이 없습니다.")
+            self.add_reservation_empty("선택한 날짜에 예약된 내역이 없습니다.")
             return
 
         if self.self_studio_only or selected_room is not None:
@@ -721,11 +703,11 @@ class MainWindow(QMainWindow):
 
         if not items:
             if self.self_studio_only and selected_room is None:
-                self.add_reservation_empty("오늘 셀프(1인)스튜디오 예약이 없습니다.")
+                self.add_reservation_empty("선택한 날짜에 셀프(1인)스튜디오 예약이 없습니다.")
             elif self.self_studio_only:
                 self.add_reservation_empty("선택한 룸의 셀프(1인)스튜디오 예약이 없습니다.")
             else:
-                self.add_reservation_empty("선택한 룸의 오늘 예약이 없습니다.")
+                self.add_reservation_empty("선택한 룸의 선택 날짜 예약이 없습니다.")
             return
 
         for item in items:
@@ -758,13 +740,13 @@ class MainWindow(QMainWindow):
         return [item for item in items if reservation_matches_room(item, selected_room)]
 
     def load_reservations(self, show_loading: bool = True) -> None:
+        target_date = self.reservation_date
         if show_loading:
-            self.refresh_button.setEnabled(False)
-            self.refresh_button.setText("불러오는 중")
+            self.set_reservation_loading(True)
 
         def worker() -> None:
-            target_date, items, error = fetch_today_reservations()
-            self.signals.loaded.emit(target_date, items, error, show_loading)
+            loaded_date, items, error = fetch_reservations(target_date)
+            self.signals.loaded.emit(loaded_date, items, error, show_loading)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -778,6 +760,8 @@ class MainWindow(QMainWindow):
         error: bool,
         show_loading: bool,
     ) -> None:
+        if target_date != self.reservation_date:
+            return
         self.reservation_date = target_date
         self.reservation_checkins = self.state.checked_in_reservations(self.reservation_date)
         self.reservation_preps = self.state.prepared_reservations(self.reservation_date)
@@ -785,11 +769,47 @@ class MainWindow(QMainWindow):
         self.reservation_error = error
         self.reservation_updated_at = datetime.now().strftime("%H:%M 업데이트")
         if show_loading:
-            self.refresh_button.setEnabled(True)
-            self.refresh_button.setText("새로고침")
+            self.set_reservation_loading(False)
+        self.update_reservation_date_labels()
         self.render_reservations()
         self.notify_checkin_alerts()
         self.update_tray_menu()
+
+    def set_reservation_loading(self, loading: bool) -> None:
+        self.refresh_button.setEnabled(not loading)
+        self.prev_date_button.setEnabled(not loading)
+        self.next_date_button.setEnabled(not loading)
+        self.refresh_button.setText("불러오는 중" if loading else "새로고침")
+        for button in (self.refresh_button, self.prev_date_button, self.next_date_button):
+            refresh_one(button)
+
+    def shift_reservation_date(self, days: int) -> None:
+        selected = self.selected_reservation_date() + timedelta(days=days)
+        self.reservation_date = selected.strftime("%Y-%m-%d")
+        self.reservation_updated_at = ""
+        self.reservations = []
+        self.reservation_error = False
+        self.reservation_checkins = self.state.checked_in_reservations(self.reservation_date)
+        self.reservation_preps = self.state.prepared_reservations(self.reservation_date)
+        self.update_reservation_date_labels()
+        self.render_reservations()
+        self.load_reservations()
+
+    def selected_reservation_date(self) -> date:
+        try:
+            return date.fromisoformat(self.reservation_date)
+        except ValueError:
+            return date.today()
+
+    def selected_reservation_label(self) -> str:
+        selected = self.selected_reservation_date()
+        suffix = "오늘" if selected == date.today() else WEEKDAYS[selected.weekday()]
+        return selected.strftime(f"%Y.%m.%d {suffix}")
+
+    def update_reservation_date_labels(self) -> None:
+        is_today = self.selected_reservation_date() == date.today()
+        self.reservation_date_label.setText(self.selected_reservation_label())
+        self.all_item.detail.setText("오늘 모든 CDE 예약" if is_today else "선택 날짜 모든 CDE 예약")
 
     def select_all_reservations(self) -> None:
         self.selected_room_id = None
@@ -805,10 +825,6 @@ class MainWindow(QMainWindow):
         self.sidebar_button.setProperty("selected", self.sidebar_open)
         save_ui_settings(sidebar_open=self.sidebar_open)
         refresh_one(self.sidebar_button)
-
-    def toggle_edit_mode(self) -> None:
-        self.edit_mode = not self.edit_mode
-        self.render_room_manage()
 
     def toggle_reservation_checkin(self, key: str) -> None:
         if key in self.reservation_checkins:
@@ -833,6 +849,9 @@ class MainWindow(QMainWindow):
         self.update_tray_menu()
 
     def pending_checkin_items(self, now: datetime) -> list[tuple[dict, datetime, str]]:
+        if self.selected_reservation_date() != now.date():
+            return []
+
         pending = []
         for item in self.reservations:
             key = reservation_key(item)
@@ -914,48 +933,6 @@ class MainWindow(QMainWindow):
         save_ui_settings(self_studio_only=self.self_studio_only)
         self.render_reservations()
 
-    def prompt_add_room(self) -> None:
-        default_name = f"{len(self.rooms_cache) + 1}호실"
-        name, ok = QInputDialog.getText(self, "룸 추가", "룸 이름", text=default_name)
-        if ok and name.strip():
-            room = self.state.add_room(name)
-            self.selected_room_id = int(room["id"])
-            self.refresh()
-
-    def prompt_rename_selected_room(self) -> None:
-        room = self.find_room_snapshot(self.selected_room_id)
-        if room is None:
-            return
-        name, ok = QInputDialog.getText(
-            self,
-            "이름 변경",
-            "룸 이름",
-            text=str(room["name"]),
-        )
-        if ok and name.strip():
-            self.state.rename_room(int(room["id"]), name)
-            self.refresh()
-
-    def confirm_delete_selected_room(self) -> None:
-        room = self.find_room_snapshot(self.selected_room_id)
-        if room is None:
-            return
-        if len(self.rooms_cache) <= 1:
-            QMessageBox.information(self, "삭제 불가", "룸은 최소 1개가 필요합니다.")
-            return
-
-        result = QMessageBox.question(
-            self,
-            "룸 삭제",
-            f"{room['name']}을 삭제할까요?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if result == QMessageBox.StandardButton.Yes:
-            self.state.delete_room(int(room["id"]))
-            self.selected_room_id = None
-            self.refresh()
-
     def find_room_snapshot(self, room_id: int | None) -> dict | None:
         if room_id is None:
             return None
@@ -980,13 +957,18 @@ class MainWindow(QMainWindow):
             app.setFont(QFont("Malgun Gothic", 10))
 
         self.root.setProperty("theme", self.theme)
+        self.root.theme = self.theme
+        for panel in (self.sidebar, self.reservation_surface, self.top_bar):
+            panel.theme = self.theme
+            panel.update()
+        self.root.update()
         self.theme_switch.set_active(self.theme)
 
-        self.setStyleSheet(APP_STYLE)
+        self.setStyleSheet(glass_stylesheet(self.theme))
         palette = self.palette()
         palette.setColor(
             self.backgroundRole(),
-            QColor("#1c1c1e" if self.theme == "dark" else "#f5f5f7"),
+            QColor("#090909" if self.theme == "dark" else "#eaf0f8"),
         )
         self.setPalette(palette)
         icon = app_icon(self.theme)
@@ -996,471 +978,7 @@ class MainWindow(QMainWindow):
         refresh_style(self.root)
 
 
-APP_STYLE = """
-QWidget#appRoot {
-    background: #f5f5f7;
-    color: #1d1d1f;
-}
-QWidget#centerArea,
-QWidget#roomListContainer,
-QWidget#reservationListContainer {
-    background: transparent;
-}
-QFrame#sidebar,
-QFrame#reservationSurface {
-    background: rgba(255, 255, 255, 0.9);
-    border: 1px solid #e5e5ea;
-    border-radius: 8px;
-}
-QLabel#appLabel {
-    color: #6e6e73;
-    font-size: 13px;
-    font-weight: 700;
-}
-QLabel#localLabel,
-QFrame#themeSwitch {
-    background: rgba(255, 255, 255, 0.82);
-    border: 1px solid #e5e5ea;
-    border-radius: 8px;
-    color: #6e6e73;
-}
-QLabel#localLabel {
-    font-size: 12px;
-    font-weight: 700;
-    min-width: 42px;
-    padding: 6px 9px;
-}
-QLabel#title {
-    color: #1d1d1f;
-    font-size: 40px;
-    font-weight: 800;
-}
-QLabel#statusSummary {
-    color: #3a3a3c;
-    font-size: 16px;
-    font-weight: 700;
-}
-QLabel#today,
-QLabel#sidebarSummary,
-QLabel#reservationMetaHeader,
-QLabel#reservationMeta,
-QLabel#reservationPurpose {
-    color: #86868b;
-    font-size: 13px;
-    font-weight: 500;
-}
-QLabel#sidebarTitle,
-QLabel#reservationTitle {
-    color: #1d1d1f;
-    font-size: 15px;
-    font-weight: 800;
-}
-QFrame#filterItem,
-QFrame#roomListItem {
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 8px;
-}
-QFrame#filterItem:hover,
-QFrame#roomListItem:hover {
-    background: #f2f2f7;
-}
-QFrame#filterItem[selected="true"],
-QFrame#roomListItem[selected="true"] {
-    background: #eaf4ff;
-    border: 1px solid #cde4ff;
-}
-QFrame#statusDot {
-    border-radius: 4px;
-}
-QFrame#statusDot[occupied="false"] {
-    background: #34c759;
-}
-QFrame#statusDot[occupied="true"] {
-    background: #ff9500;
-}
-QLabel#filterTitle,
-QLabel#listRoomName,
-QLabel#reservationStudio {
-    color: #1d1d1f;
-    font-weight: 800;
-}
-QLabel#filterTitle,
-QLabel#listRoomName {
-    font-size: 14px;
-}
-QLabel#filterDetail,
-QLabel#listRoomStatus {
-    color: #6e6e73;
-    font-size: 12px;
-    font-weight: 700;
-}
-QLabel#listRoomStatus[occupied="true"] {
-    color: #9a4a00;
-}
-QFrame#roomManage {
-    background: #f7f7fa;
-    border: 1px solid #ececf0;
-    border-radius: 8px;
-}
-QPushButton#addRoomButton,
-QPushButton#refreshButton,
-QPushButton#settingsButton {
-    background: #0071e3;
-    border: 0;
-    border-radius: 8px;
-    color: #ffffff;
-    font-weight: 800;
-}
-QPushButton#addRoomButton,
-QPushButton#refreshButton,
-QPushButton#settingsButton {
-    font-size: 13px;
-    padding: 9px 12px;
-}
-QPushButton#addRoomButton:hover,
-QPushButton#refreshButton:hover,
-QPushButton#settingsButton:hover {
-    background: #0077ed;
-}
-QPushButton#settingsButton {
-    background: rgba(255, 255, 255, 0.82);
-    border: 1px solid #e5e5ea;
-    color: #1d1d1f;
-}
-QPushButton#settingsButton:hover {
-    background: #ffffff;
-    border: 1px solid #c7c7cc;
-}
-QLabel#settingsTitle {
-    color: #1d1d1f;
-    font-size: 18px;
-    font-weight: 800;
-}
-QDialog {
-    background: #f5f5f7;
-}
-QCheckBox#settingsCheck {
-    color: #3a3a3c;
-    font-size: 14px;
-    font-weight: 800;
-    spacing: 8px;
-}
-QCheckBox#settingsCheck::indicator {
-    height: 16px;
-    width: 16px;
-}
-QPushButton#menuButton {
-    background: rgba(255, 255, 255, 0.82);
-    border: 1px solid #e5e5ea;
-    border-radius: 8px;
-    color: #1d1d1f;
-    font-size: 19px;
-    font-weight: 800;
-}
-QPushButton#menuButton:hover,
-QPushButton#menuButton[selected="true"] {
-    background: #ffffff;
-    border: 1px solid #c7c7cc;
-}
-QPushButton#editButton {
-    background: transparent;
-    border: 0;
-    border-radius: 8px;
-    color: #0071e3;
-    font-size: 13px;
-    font-weight: 800;
-    padding: 7px 9px;
-}
-QPushButton#editButton:hover,
-QPushButton#editButton[selected="true"] {
-    background: #eaf4ff;
-}
-QPushButton#secondaryAction,
-QPushButton#dangerAction {
-    border: 0;
-    border-radius: 8px;
-    font-size: 13px;
-    font-weight: 800;
-    padding: 10px 12px;
-}
-QPushButton#secondaryAction {
-    background: #ffffff;
-    color: #1d1d1f;
-}
-QPushButton#secondaryAction:hover {
-    background: #e5e5ea;
-}
-QPushButton#dangerAction {
-    background: #fff0f0;
-    color: #c01f2f;
-}
-QPushButton#dangerAction:hover {
-    background: #ffe1e1;
-}
-QPushButton#themeOption {
-    background: transparent;
-    border: 0;
-    border-radius: 7px;
-    color: #6e6e73;
-    font-size: 12px;
-    font-weight: 800;
-    min-width: 54px;
-    padding: 6px 10px;
-}
-QPushButton#themeOption[selected="true"] {
-    background: #ffffff;
-    color: #1d1d1f;
-}
-QCheckBox#selfStudioFilter {
-    color: #3a3a3c;
-    font-size: 13px;
-    font-weight: 800;
-    spacing: 7px;
-}
-QCheckBox#selfStudioFilter::indicator {
-    height: 16px;
-    width: 16px;
-}
-QFrame#reservationRow {
-    background: #ffffff;
-    border: 1px solid #eeeeF2;
-    border-radius: 8px;
-}
-QFrame#reservationRow[prepared="true"] {
-    background: #fff8eb;
-    border: 1px solid #ff9500;
-}
-QFrame#reservationRow[checked_in="true"] {
-    background: #ecfdf5;
-    border: 1px solid #34c759;
-}
-QFrame#reservationRow[prepared="true"][checked_in="true"] {
-    background: #ecfdf5;
-    border: 2px solid #1f7a3f;
-}
-QLabel#reservationTime {
-    color: #0071e3;
-    font-size: 18px;
-    font-weight: 800;
-}
-QLabel#reservationStudio {
-    font-size: 17px;
-}
-QLabel#reservationMeta {
-    font-size: 13px;
-}
-QLabel#reservationState {
-    border-radius: 8px;
-    font-size: 11px;
-    font-weight: 800;
-    padding: 4px 9px;
-}
-QLabel#reservationState[state="confirmed"] {
-    background: #e8f7ee;
-    color: #1f7a3f;
-}
-QLabel#reservationState[state="cancelled"] {
-    background: #fff0f0;
-    color: #c01f2f;
-}
-QLabel#reservationState[state="rejected"] {
-    background: #fff4e5;
-    color: #9a4a00;
-}
-QLabel#reservationState[state="default"] {
-    background: #f2f2f7;
-    color: #6e6e73;
-}
-QPushButton#reservationCheckin,
-QPushButton#reservationPrep {
-    border: 0;
-    border-radius: 8px;
-    color: #ffffff;
-    font-size: 12px;
-    font-weight: 800;
-    min-width: 64px;
-    padding: 7px 11px;
-}
-QPushButton#reservationCheckin {
-    background: #0071e3;
-}
-QPushButton#reservationPrep {
-    background: #ff9500;
-}
-QPushButton#reservationCheckin:hover {
-    background: #0077ed;
-}
-QPushButton#reservationPrep:hover {
-    background: #ff9f0a;
-}
-QPushButton#reservationCheckin[checked="true"] {
-    background: #1f7a3f;
-}
-QPushButton#reservationPrep[checked="true"] {
-    background: #34c759;
-}
-QPushButton#reservationCheckin[checked="true"]:hover {
-    background: #248a49;
-}
-QPushButton#reservationPrep[checked="true"]:hover {
-    background: #30b753;
-}
-QLabel#emptyState {
-    color: #86868b;
-    font-size: 14px;
-    font-weight: 600;
-    padding: 40px 0;
-}
-QScrollArea#roomListScroll,
-QScrollArea#reservationScroll {
-    background: transparent;
-    border: 0;
-}
-QScrollBar:vertical {
-    background: transparent;
-    margin: 0;
-    width: 8px;
-}
-QScrollBar::handle:vertical {
-    background: #c7c7cc;
-    border-radius: 4px;
-    min-height: 40px;
-}
-QScrollBar::add-line:vertical,
-QScrollBar::sub-line:vertical {
-    height: 0;
-}
-QWidget#appRoot[theme="dark"] {
-    background: #1c1c1e;
-    color: #f5f5f7;
-}
-QWidget#appRoot[theme="dark"] QFrame#sidebar,
-QWidget#appRoot[theme="dark"] QFrame#reservationSurface {
-    background: rgba(44, 44, 46, 0.9);
-    border: 1px solid #3a3a3c;
-}
-QWidget#appRoot[theme="dark"] QFrame#reservationRow {
-    background: #2c2c2e;
-    border: 1px solid #3a3a3c;
-}
-QWidget#appRoot[theme="dark"] QFrame#reservationRow[prepared="true"] {
-    background: #3a2b14;
-    border: 1px solid #ff9500;
-}
-QWidget#appRoot[theme="dark"] QFrame#reservationRow[checked_in="true"] {
-    background: #143522;
-    border: 1px solid #34c759;
-}
-QWidget#appRoot[theme="dark"] QFrame#reservationRow[prepared="true"][checked_in="true"] {
-    background: #143522;
-    border: 2px solid #30d158;
-}
-QWidget#appRoot[theme="dark"] QFrame#roomManage {
-    background: #242426;
-    border: 1px solid #3a3a3c;
-}
-QWidget#appRoot[theme="dark"] QLabel#title,
-QWidget#appRoot[theme="dark"] QLabel#statusSummary,
-QWidget#appRoot[theme="dark"] QLabel#sidebarTitle,
-QWidget#appRoot[theme="dark"] QLabel#reservationTitle,
-QWidget#appRoot[theme="dark"] QLabel#filterTitle,
-QWidget#appRoot[theme="dark"] QLabel#listRoomName,
-QWidget#appRoot[theme="dark"] QLabel#reservationStudio {
-    color: #f5f5f7;
-}
-QWidget#appRoot[theme="dark"] QLabel#appLabel,
-QWidget#appRoot[theme="dark"] QLabel#today,
-QWidget#appRoot[theme="dark"] QLabel#sidebarSummary,
-QWidget#appRoot[theme="dark"] QLabel#filterDetail,
-QWidget#appRoot[theme="dark"] QLabel#listRoomStatus,
-QWidget#appRoot[theme="dark"] QLabel#reservationMetaHeader,
-QWidget#appRoot[theme="dark"] QLabel#reservationMeta,
-QWidget#appRoot[theme="dark"] QLabel#reservationPurpose,
-QWidget#appRoot[theme="dark"] QLabel#emptyState {
-    color: #98989d;
-}
-QWidget#appRoot[theme="dark"] QFrame#filterItem:hover,
-QWidget#appRoot[theme="dark"] QFrame#roomListItem:hover {
-    background: #3a3a3c;
-}
-QWidget#appRoot[theme="dark"] QFrame#filterItem[selected="true"],
-QWidget#appRoot[theme="dark"] QFrame#roomListItem[selected="true"] {
-    background: #102f4f;
-    border: 1px solid #214f79;
-}
-QWidget#appRoot[theme="dark"] QLabel#listRoomStatus[occupied="true"] {
-    color: #ffd60a;
-}
-QWidget#appRoot[theme="dark"] QLabel#localLabel,
-QWidget#appRoot[theme="dark"] QFrame#themeSwitch {
-    background: rgba(44, 44, 46, 0.86);
-    border: 1px solid #3a3a3c;
-    color: #aeaeb2;
-}
-QWidget#appRoot[theme="dark"] QPushButton#themeOption {
-    color: #aeaeb2;
-}
-QWidget#appRoot[theme="dark"] QPushButton#themeOption[selected="true"] {
-    background: #636366;
-    color: #ffffff;
-}
-QWidget#appRoot[theme="dark"] QCheckBox#selfStudioFilter {
-    color: #f5f5f7;
-}
-QWidget#appRoot[theme="dark"] QPushButton#secondaryAction {
-    background: #3a3a3c;
-    color: #f5f5f7;
-}
-QWidget#appRoot[theme="dark"] QPushButton#dangerAction {
-    background: #402024;
-    color: #ff6961;
-}
-QWidget#appRoot[theme="dark"] QPushButton#menuButton {
-    background: rgba(44, 44, 46, 0.86);
-    border: 1px solid #3a3a3c;
-    color: #f5f5f7;
-}
-QWidget#appRoot[theme="dark"] QPushButton#menuButton:hover,
-QWidget#appRoot[theme="dark"] QPushButton#menuButton[selected="true"] {
-    background: #3a3a3c;
-    border: 1px solid #636366;
-}
-QWidget#appRoot[theme="dark"] QPushButton#settingsButton {
-    background: rgba(44, 44, 46, 0.86);
-    border: 1px solid #3a3a3c;
-    color: #f5f5f7;
-}
-QWidget#appRoot[theme="dark"] QPushButton#settingsButton:hover {
-    background: #3a3a3c;
-    border: 1px solid #636366;
-}
-QWidget#appRoot[theme="dark"] QLabel#settingsTitle,
-QWidget#appRoot[theme="dark"] QCheckBox#settingsCheck {
-    color: #f5f5f7;
-}
-QDialog[theme="dark"] {
-    background: #1c1c1e;
-}
-QDialog[theme="dark"] QLabel#settingsTitle,
-QDialog[theme="dark"] QCheckBox#settingsCheck {
-    color: #f5f5f7;
-}
-QWidget#appRoot[theme="dark"] QPushButton#editButton {
-    color: #0a84ff;
-}
-QWidget#appRoot[theme="dark"] QPushButton#editButton:hover,
-QWidget#appRoot[theme="dark"] QPushButton#editButton[selected="true"] {
-    background: #102f4f;
-}
-QWidget#appRoot[theme="dark"] QScrollBar::handle:vertical {
-    background: #48484a;
-}
-"""
-
-
-def fetch_today_reservations() -> tuple[str, list[dict], bool]:
-    target_date = date.today().strftime("%Y-%m-%d")
+def fetch_reservations(target_date: str) -> tuple[str, list[dict], bool]:
     query = urlencode({"mode": "day-list", "date": target_date})
     try:
         with urlopen(f"{BASE_URL}?{query}", timeout=10) as response:
@@ -1580,7 +1098,7 @@ def reservation_start_datetime(item: dict, target_date: str) -> datetime | None:
 
 def reservation_meta(item: dict) -> str:
     booker = str(item.get("rrBooker", "")).strip() or "예약자 없음"
-    return f"{booker} · {str(item.get('rrPurpose', '')).strip() or '목적 없음'}"
+    return f"예약자 · {booker}"
 
 
 def reservation_state_key(item: dict) -> str:
