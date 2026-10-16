@@ -1,5 +1,7 @@
 """Soft ambient backdrops and translucent glass surfaces for the desktop UI."""
 
+from pathlib import Path
+
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient
 from PySide6.QtWidgets import QFrame, QWidget
@@ -65,6 +67,7 @@ class GlassPanel(QFrame):
 def glass_stylesheet(theme: str) -> str:
     dark = theme == "dark"
     colors = {
+        "checkmark": (Path(__file__).resolve().parents[1] / "assets" / "checkmark.svg").as_posix(),
         "text": "#f2f2f2" if dark else "#24344c",
         "muted": "#b5b5b5" if dark else "#566981",
         "faint": "#999999" if dark else "#62748b",
@@ -143,8 +146,10 @@ QPushButton#dateNavButton { background: transparent; border-color: transparent; 
 QPushButton#dateNavButton:hover { background: %(hover)s; }
 QCheckBox { spacing: 8px; color: %(muted)s; font-size: 12px; }
 QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid %(selected_edge)s;
-    border-radius: 6px; background: %(control)s; }
-QCheckBox::indicator:checked { background: %(check)s; border: 1px solid %(check_edge)s; }
+    border-radius: 4px; background: %(control)s; }
+QCheckBox::indicator:unchecked:hover { background: %(hover)s; border-color: %(check_edge)s; }
+QCheckBox::indicator:checked { background: %(check)s; border: 1px solid %(check_edge)s;
+    image: url("%(checkmark)s"); }
 QCheckBox::indicator:checked:hover { background: %(check_hover)s; }
 QCheckBox:focus { color: %(accent)s; }
 QFrame#reservationRow { background: %(row)s; border: 1px solid %(row_edge)s; border-radius: 20px; }
