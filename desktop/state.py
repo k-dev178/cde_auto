@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,52 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def read_json_object(path: Path) -> dict:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(loaded, dict):
+            raise ValueError("Expected a JSON object")
+        return loaded
+    except FileNotFoundError:
+        return {}
+    except (ValueError, UnicodeError):
+        # Preserve damaged data before recovering with defaults.
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        path.replace(path.with_name(f"{path.name}.corrupt-{stamp}"))
+        return {}
+
+
+def write_json_object(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            json.dump(data, temporary, ensure_ascii=False, indent=2)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def boolean_value(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        if value.lower() in {"true", "1"}:
+            return True
+        if value.lower() in {"false", "0"}:
+            return False
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    return default
+
+
 @dataclass(frozen=True)
 class AppConfig:
     rooms: list[str]
@@ -39,21 +86,22 @@ class AppConfig:
 
 
 def load_config() -> AppConfig:
-    data = {}
-    if CONFIG_PATH.exists():
-        loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            data = loaded
+    data = read_json_object(CONFIG_PATH)
     theme = str(data.get("theme", "light"))
     if theme not in {"light", "dark"}:
         theme = "light"
+    rooms = data.get("rooms")
+    rooms = (
+        [room.strip() for room in rooms if isinstance(room, str) and room.strip()]
+        if isinstance(rooms, list) else []
+    )
     return AppConfig(
-        rooms=[str(room) for room in data.get("rooms", DEFAULT_ROOMS)],
+        rooms=rooms or DEFAULT_ROOMS[:],
         theme=theme,
-        self_studio_only=bool(data.get("self_studio_only", False)),
-        sidebar_open=bool(data.get("sidebar_open", False)),
-        background_enabled=bool(data.get("background_enabled", True)),
-        notification_self_studio_only=bool(data.get("notification_self_studio_only", True)),
+        self_studio_only=boolean_value(data.get("self_studio_only"), False),
+        sidebar_open=boolean_value(data.get("sidebar_open"), False),
+        background_enabled=boolean_value(data.get("background_enabled"), True),
+        notification_self_studio_only=boolean_value(data.get("notification_self_studio_only"), True),
     )
 
 
@@ -84,31 +132,13 @@ def save_ui_settings(
 
 
 def save_config_values(**values: object) -> None:
-    data = {}
-    if CONFIG_PATH.exists():
-        loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            data = loaded
+    data = read_json_object(CONFIG_PATH)
     data.update(values)
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json_object(CONFIG_PATH, data)
 
 
 def save_config_rooms(rooms: list[str]) -> None:
-    data = {}
-    if CONFIG_PATH.exists():
-        loaded = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            data = loaded
-    data["rooms"] = rooms
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    save_config_values(rooms=rooms)
 
 
 class RoomState:
@@ -194,18 +224,28 @@ class RoomState:
         return room
 
     def _load_state_data(self) -> dict:
-        if not STATE_PATH.exists():
-            return {}
-        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        return read_json_object(STATE_PATH)
 
     def _load_or_create_rooms(self, data: dict) -> list[dict]:
         rooms = data.get("rooms")
-        if rooms:
-            self._normalize_rooms(rooms)
-            return rooms
-
         now = utc_now()
+        if isinstance(rooms, list):
+            valid_rooms = []
+            for room in rooms:
+                if not isinstance(room, dict):
+                    continue
+                name = room.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                valid_rooms.append({
+                    "id": len(valid_rooms) + 1,
+                    "name": name.strip(),
+                    "occupied": boolean_value(room.get("occupied"), False),
+                    "updated_at": str(room.get("updated_at") or now),
+                })
+            if valid_rooms:
+                return valid_rooms
+
         return [
             {
                 "id": index + 1,
@@ -239,19 +279,11 @@ class RoomState:
         return normalized
 
     def _save(self) -> None:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(
-            json.dumps(
-                {
-                    "rooms": self.rooms,
-                    "reservation_checkins": self.reservation_checkins,
-                    "reservation_preps": self.reservation_preps,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        write_json_object(STATE_PATH, {
+            "rooms": self.rooms,
+            "reservation_checkins": self.reservation_checkins,
+            "reservation_preps": self.reservation_preps,
+        })
 
     def _find_room(self, room_id: int) -> dict:
         for room in self.rooms:

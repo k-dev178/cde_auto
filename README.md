@@ -24,6 +24,12 @@ dist\CDEStudio.exe
 
 `CDEStudio.exe` 파일만 복사해서 실행해도 됩니다.
 
+## 검증
+
+```powershell
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+```
+
 ## 저장되는 설정
 
 - 다크/화이트 모드
@@ -32,6 +38,10 @@ dist\CDEStudio.exe
 - 백그라운드 실행 허용
 - 알림 범위
 - 입실 버튼 체크 상태
+- 준비 버튼 체크 상태
+
+설정과 상태는 임시 파일에 저장한 뒤 교체해 기존 파일 손상을 방지합니다.
+깨진 JSON 파일을 발견하면 같은 폴더에 `*.corrupt-날짜-시간`으로 원본을 보관하고 기본값으로 복구합니다.
 
 ## 설정 초기화
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 from datetime import date, datetime, timedelta, timezone
@@ -39,7 +40,7 @@ ALERT_REPEAT_MINUTES = 5
 
 
 class ReservationSignals(QObject):
-    loaded = Signal(str, object, bool, bool)
+    loaded = Signal(int, str, object, bool)
 
 
 class AllReservationsItem(QFrame):
@@ -285,6 +286,10 @@ class MainWindow(QMainWindow):
         self.reservations: list[dict] = []
         self.reservation_error = False
         self.reservation_date = date.today().strftime("%Y-%m-%d")
+        self._last_today = date.today()
+        self._reservation_request_id = 0
+        self._reservation_request_pending = False
+        self._reservation_request_date = ""
         self.reservation_updated_at = ""
         self.reservation_checkins = self.state.checked_in_reservations(self.reservation_date)
         self.reservation_preps = self.state.prepared_reservations(self.reservation_date)
@@ -558,7 +563,7 @@ class MainWindow(QMainWindow):
         self.refresh_button = QPushButton("새로고침")
         self.refresh_button.setObjectName("refreshButton")
         self.refresh_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.refresh_button.clicked.connect(self.load_reservations)
+        self.refresh_button.clicked.connect(lambda: self.load_reservations())
 
         reservation_header = QHBoxLayout()
         reservation_header.setContentsMargins(24, 22, 24, 0)
@@ -741,12 +746,20 @@ class MainWindow(QMainWindow):
 
     def load_reservations(self, show_loading: bool = True) -> None:
         target_date = self.reservation_date
+        if self._reservation_request_pending and self._reservation_request_date == target_date:
+            if show_loading:
+                self.set_reservation_loading(True)
+            return
+        self._reservation_request_id += 1
+        request_id = self._reservation_request_id
+        self._reservation_request_pending = True
+        self._reservation_request_date = target_date
         if show_loading:
             self.set_reservation_loading(True)
 
         def worker() -> None:
             loaded_date, items, error = fetch_reservations(target_date)
-            self.signals.loaded.emit(loaded_date, items, error, show_loading)
+            self.signals.loaded.emit(request_id, loaded_date, items, error)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -755,21 +768,21 @@ class MainWindow(QMainWindow):
 
     def on_reservations_loaded(
         self,
+        request_id: int,
         target_date: str,
         items: list[dict],
         error: bool,
-        show_loading: bool,
     ) -> None:
-        if target_date != self.reservation_date:
+        if request_id != self._reservation_request_id or target_date != self.reservation_date:
             return
+        self._reservation_request_pending = False
         self.reservation_date = target_date
         self.reservation_checkins = self.state.checked_in_reservations(self.reservation_date)
         self.reservation_preps = self.state.prepared_reservations(self.reservation_date)
         self.reservations = items
         self.reservation_error = error
         self.reservation_updated_at = datetime.now().strftime("%H:%M 업데이트")
-        if show_loading:
-            self.set_reservation_loading(False)
+        self.set_reservation_loading(False)
         self.update_reservation_date_labels()
         self.render_reservations()
         self.notify_checkin_alerts()
@@ -854,8 +867,10 @@ class MainWindow(QMainWindow):
 
         pending = []
         for item in self.reservations:
+            if item.get("rrState") != "예약완료":
+                continue
             key = reservation_key(item)
-            if key in self.reservation_preps:
+            if key in self.reservation_preps or key in self.reservation_checkins:
                 continue
             if self.notification_self_studio_only and not reservation_is_self_studio(item):
                 continue
@@ -865,6 +880,12 @@ class MainWindow(QMainWindow):
                 continue
             if now < start_at - timedelta(minutes=PREP_ALERT_MINUTES):
                 continue
+            end_at = reservation_datetime(item.get("rrEndTime"), self.reservation_date)
+            if end_at is not None:
+                if end_at < start_at:
+                    end_at += timedelta(days=1)
+                if now >= end_at:
+                    continue
 
             alert_type = "overdue" if now >= start_at else "prep"
             pending.append((item, start_at, alert_type))
@@ -950,6 +971,17 @@ class MainWindow(QMainWindow):
 
     def refresh_times(self) -> None:
         self.today.setText(today_label())
+        today = date.today()
+        previous_today = self._last_today
+        self._last_today = today
+        if today != previous_today:
+            if self.selected_reservation_date() == previous_today:
+                self.reservation_alerted_at.clear()
+                self.shift_reservation_date((today - previous_today).days)
+            else:
+                self.update_reservation_date_labels()
+        self.notify_checkin_alerts()
+        self.update_tray_menu()
 
     def apply_style(self) -> None:
         app = QApplication.instance()
@@ -983,9 +1015,11 @@ def fetch_reservations(target_date: str) -> tuple[str, list[dict], bool]:
     try:
         with urlopen(f"{BASE_URL}?{query}", timeout=10) as response:
             data = json.loads(response.read().decode("utf-8"))
-        items = data.get("items", [])
-        if not isinstance(items, list):
-            items = []
+        if not isinstance(data, dict):
+            return target_date, [], True
+        items = data.get("items")
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            return target_date, [], True
         return target_date, items, False
     except Exception:
         return target_date, [], True
@@ -1044,7 +1078,8 @@ def refresh_style(widget: QWidget) -> None:
 
 
 def reservation_key(item: dict) -> str:
-    value = str(item.get("rrSeq", "")).strip()
+    raw_value = item.get("rrSeq")
+    value = str(raw_value).strip() if raw_value is not None else ""
     if value:
         return value
     return "|".join(
@@ -1062,7 +1097,11 @@ def reservation_time(item: dict) -> str:
 
 
 def reservation_start_datetime(item: dict, target_date: str) -> datetime | None:
-    start = str(item.get("rrStartTime", "")).strip()
+    return reservation_datetime(item.get("rrStartTime"), target_date)
+
+
+def reservation_datetime(value: object, target_date: str) -> datetime | None:
+    start = str(value or "").strip()
     if not start:
         return None
 
@@ -1117,14 +1156,16 @@ def reservation_confirmed_count(items: list[dict]) -> int:
 
 
 def reservation_matches_room(item: dict, room: dict) -> bool:
-    studio = normalize_text(str(item.get("rpName", "")))
-    room_name = normalize_text(str(room.get("name", "")))
-    if room_name and (room_name in studio or studio in room_name):
-        return True
-
-    studio_digits = "".join(char for char in studio if char.isdigit())
-    room_digits = "".join(char for char in room_name if char.isdigit())
-    return bool(studio_digits and room_digits and studio_digits == room_digits)
+    studio = normalize_text(str(item.get("rpName") or ""))
+    room_name = normalize_text(str(room.get("name") or ""))
+    if not studio or not room_name:
+        return False
+    # Use the room number, excluding the studio's capacity (for example, 1인).
+    studio_numbers = re.findall(r"\d+", re.sub(r"\d+인", "", studio))
+    room_numbers = re.findall(r"\d+", re.sub(r"\d+인", "", room_name))
+    if studio_numbers and room_numbers:
+        return int(studio_numbers[-1]) == int(room_numbers[-1])
+    return room_name in studio or studio in room_name
 
 
 def reservation_is_self_studio(item: dict) -> bool:
@@ -1133,8 +1174,10 @@ def reservation_is_self_studio(item: dict) -> bool:
         return False
 
     has_self = "셀프" in studio or "self" in studio
-    one_person_tokens = ("1인", "일인", "oneperson", "single")
-    return has_self and any(token in studio for token in one_person_tokens)
+    one_person = bool(re.search(r"(?<!\d)1인", studio)) or any(
+        token in studio for token in ("일인", "oneperson", "single")
+    )
+    return has_self and one_person
 
 
 def normalize_text(value: str) -> str:
